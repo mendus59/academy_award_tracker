@@ -20,6 +20,9 @@ js/firebase-config.js   ← your Firebase project settings go here
 data/movies.json        Generated film and nomination data
 scripts/build_movies.py Regenerates data/movies.json
 firestore.rules         Firestore security rules
+firebase.json           Firebase CLI config (points at firestore.rules)
+.firebaserc             Firebase project id for the CLI
+.github/workflows/      GitHub Actions: deploy site to Pages, deploy Firestore rules
 ```
 
 ## 1. Set up Firebase (about 10 minutes)
@@ -34,7 +37,7 @@ firestore.rules         Firestore security rules
    (`localhost` is already there for local testing.)
 5. **Create the database:** Build → **Firestore Database** → Create database → choose a location → start in **production mode**.
 6. **Publish the security rules:** in Firestore → **Rules**, replace the contents with [`firestore.rules`](firestore.rules) and click **Publish**.
-   Or, with the Firebase CLI: `firebase deploy --only firestore:rules`.
+   Or, with the Firebase CLI: `firebase deploy --only firestore:rules`, or automatically through GitHub Actions (see below).
 
 The rules make sure that:
 - only you can change your own seen list, ratings and reviews;
@@ -42,11 +45,26 @@ The rules make sure that:
 - a friendship can only be created by the person accepting a pending friend request;
 - emails can be looked up one at a time (to add a friend) but never listed.
 
-## 2. Publish on GitHub Pages
+## 2. Publish with GitHub Actions
 
-1. Commit and push to `main` on `github.com/mendus59/academy_award_tracker`.
-2. On GitHub: **Settings → Pages → Build and deployment**. Set Source to *Deploy from a branch*, Branch to `main` and folder to `/ (root)` → Save.
-3. After a minute the site is live at **https://mendus59.github.io/academy_award_tracker/**.
+Deployment is automated by two workflows in [`.github/workflows/`](.github/workflows):
+
+| Workflow | Runs when | What it does |
+|---|---|---|
+| `deploy-pages.yml` | every push to `main`, or manually | Checks that `data/movies.json` is valid, copies the site files (`index.html`, `css/`, `js/`, `data/`) into an artifact, and publishes it to GitHub Pages |
+| `deploy-firestore-rules.yml` | a push to `main` that changes `firestore.rules`, `firebase.json` or `.firebaserc`, or manually | Deploys the security rules to the Firebase project in `.firebaserc` |
+
+### One-time setup
+
+1. **Turn on Pages via Actions:** on GitHub go to **Settings → Pages → Build and deployment → Source** and choose **GitHub Actions**.
+2. Push to `main`. Watch the run in the **Actions** tab. When it finishes, the site is live at **https://mendus59.github.io/academy_award_tracker/**.
+3. *(Optional)* **Deploy Firestore rules automatically.** Until this is set up, the rules workflow skips itself with a notice, and you publish rules by hand in the Firebase console.
+   1. In the [Google Cloud console](https://console.cloud.google.com/iam-admin/serviceaccounts?project=academy-award-tracker), create a service account (e.g. `github-rules-deployer`). Give it the **Firebase Rules Admin** and **Service Usage Consumer** roles.
+   2. Open the service account → **Keys → Add key → Create new key → JSON**, which downloads a file.
+   3. On GitHub, go to **Settings → Secrets and variables → Actions → New repository secret**. Set Name to `FIREBASE_SERVICE_ACCOUNT` and Value to the entire contents of that JSON file. Then delete the downloaded file.
+   4. Run **Actions → Deploy Firestore rules → Run workflow** once to confirm it works.
+
+You can re-run either workflow at any time from the Actions tab (**Run workflow**).
 
 ## Run locally
 
@@ -72,6 +90,8 @@ After each Oscars ceremony, once oscar_data has been updated:
 python scripts/build_movies.py --refresh
 git add data/movies.json && git commit -m "Update Oscar data" && git push
 ```
+
+The push triggers the Pages workflow, which publishes the new data.
 
 Notes on the data:
 - Scientific & Technical awards are left out because they honor technologies rather than films.
