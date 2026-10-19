@@ -1,0 +1,5 @@
+scripts/.cache/
+__pycache__/
+.firebase/
+*.log
+.DS_Store

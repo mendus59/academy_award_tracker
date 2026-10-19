@@ -1,0 +1,77 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isUser(uid) { return signedIn() && request.auth.uid == uid; }
+    function areFriends(uid) {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(uid)/friends/$(request.auth.uid));
+    }
+
+    // Public profile: any signed-in user can see names (needed for friend search).
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow write: if isUser(uid)
+        && request.resource.data.keys().hasOnly(['displayName', 'nameLower', 'photoURL', 'updatedAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.nameLower == request.resource.data.displayName.lower();
+    }
+
+    // Find-a-friend-by-email. Single lookups only, so emails can't be enumerated.
+    match /emailIndex/{email} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create, update: if signedIn()
+        && request.auth.token.email != null
+        && email == request.auth.token.email.lower()
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /users/{uid} {
+      // Seen / rating / review per movie. Visible to the owner and their friends.
+      match /movies/{movieId} {
+        allow read: if isUser(uid) || areFriends(uid);
+        allow delete: if isUser(uid);
+        allow create, update: if isUser(uid)
+          && movieId.matches('tt[0-9]+')
+          && request.resource.data.keys().hasOnly(['seen', 'rating', 'review', 'updatedAt'])
+          && request.resource.data.seen is bool
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 0 && request.resource.data.rating <= 5
+          && request.resource.data.review is string
+          && request.resource.data.review.size() <= 500;
+      }
+
+      // Friendship is stored on both sides. It can only be created by the person
+      // accepting a pending friend request (friendRequests/{from}_{to}).
+      match /friends/{friendId} {
+        allow read: if isUser(uid) || isUser(friendId);
+        allow create: if request.resource.data.keys().hasOnly(['since']) && (
+          (isUser(uid) && exists(/databases/$(database)/documents/friendRequests/$(friendId + '_' + uid))) ||
+          (isUser(friendId) && exists(/databases/$(database)/documents/friendRequests/$(uid + '_' + friendId)))
+        );
+        allow delete: if isUser(uid) || isUser(friendId);
+      }
+    }
+
+    match /friendRequests/{requestId} {
+      // `resource == null` lets the app check whether a request exists before sending one.
+      allow get: if signedIn()
+        && (resource == null || resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+      allow list: if signedIn()
+        && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['from', 'to', 'createdAt'])
+        && request.resource.data.from == request.auth.uid
+        && request.resource.data.to != request.auth.uid
+        && requestId == request.resource.data.from + '_' + request.resource.data.to
+        && exists(/databases/$(database)/documents/profiles/$(request.resource.data.to));
+      allow delete: if signedIn() && request.auth.uid in [resource.data.from, resource.data.to];
+    }
+  }
+}
