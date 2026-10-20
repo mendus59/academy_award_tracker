@@ -1,6 +1,15 @@
 import * as fb from "./firebase.js";
 
-const PAGE_SIZE = 60;
+const PAGE_SIZE = { cards: 60, compact: 200 };
+const LAYOUT_KEY = "oscarTracker.layout";
+
+function loadLayout() {
+  try {
+    return localStorage.getItem(LAYOUT_KEY) === "compact" ? "compact" : "cards";
+  } catch {
+    return "cards";
+  }
+}
 
 const DEFAULT_FILTERS = {
   q: "",
@@ -14,6 +23,21 @@ const DEFAULT_FILTERS = {
   overlap: "any",
   sort: "year-desc",
 };
+
+// Filters a user can save as their defaults (search text and friend comparison aren't).
+const SAVED_FILTER_KEYS = ["category", "genre", "from", "to", "result", "status", "sort"];
+const SORTS = [
+  ["year-desc", "Year (newest first)"],
+  ["year-asc", "Year (oldest first)"],
+  ["title", "Title (A–Z)"],
+  ["category", "Award category"],
+  ["genre", "Genre"],
+  ["noms-desc", "Most nominations"],
+  ["wins-desc", "Most wins"],
+  ["runtime", "Runtime (shortest)"],
+  ["my-rating", "My rating"],
+  ["friend-rating", "Friend's rating"],
+];
 
 const state = {
   movies: [],
@@ -33,10 +57,14 @@ const state = {
   friendMovies: new Map(), // uid -> Map(movieId -> entry)
   incoming: [],
   outgoing: [],
+  settings: null, // { filters, layout } saved to the signed-in user's account
 
   filters: { ...DEFAULT_FILTERS },
-  shown: PAGE_SIZE,
+  layout: loadLayout(), // "cards" or "compact" (one line per film)
+  shown: 0,
 };
+const pageSize = () => PAGE_SIZE[state.layout];
+state.shown = pageSize();
 
 const subs = { user: [], friendMovies: new Map() };
 
@@ -158,6 +186,91 @@ async function loadMovies() {
   $("#data-date").textContent = `Data updated ${data.generated}`;
 }
 
+// ---------- Default filters (user settings) ----------
+
+// Drops unknown keys and values that no longer make sense (e.g. a removed category).
+function sanitizeFilters(raw = {}) {
+  const clean = {};
+  const year = (v) => {
+    const n = Number(v);
+    return v !== "" && Number.isInteger(n) && n >= state.minYear && n <= state.maxYear ? String(n) : "";
+  };
+  const category = raw.category || "";
+  if (
+    (category.startsWith("class:") && state.classes.some((c) => c.id === category.slice(6))) ||
+    (category.startsWith("cat:") && state.catIndex.has(category.slice(4)))
+  ) {
+    clean.category = category;
+  }
+  if (state.genres.some(([g]) => g === raw.genre)) clean.genre = raw.genre;
+  if (year(raw.from || "")) clean.from = year(raw.from);
+  if (year(raw.to || "")) clean.to = year(raw.to);
+  if (["won", "lost"].includes(raw.result)) clean.result = raw.result;
+  if (["seen", "unseen"].includes(raw.status)) clean.status = raw.status;
+  if (SORTS.some(([v]) => v === raw.sort) && raw.sort !== "friend-rating") clean.sort = raw.sort;
+  return clean;
+}
+
+// What Browse starts with, and what "Reset" returns to.
+const baseFilters = () => ({ ...DEFAULT_FILTERS, ...(state.user ? state.settings?.filters : null) });
+const sameFilters = (a, b) => Object.keys(DEFAULT_FILTERS).every((k) => a[k] === b[k]);
+
+function applyDefaults() {
+  state.filters = baseFilters();
+  state.layout = (state.user && state.settings?.layout) || loadLayout();
+  state.shown = pageSize();
+}
+
+// ---------- Shared filter controls ----------
+
+function categoryOptions() {
+  return `<option value="">All categories</option>${state.classes
+    .map((cls) => {
+      const cats = state.categories.filter((c) => c.class === cls.id);
+      if (!cats.length) return "";
+      return `<optgroup label="${esc(cls.label)}">
+        <option value="class:${esc(cls.id)}">All ${esc(cls.label)} categories</option>
+        ${cats.map((c) => `<option value="cat:${esc(c.name)}">${esc(catLabel(c.name))}</option>`).join("")}
+      </optgroup>`;
+    })
+    .join("")}`;
+}
+
+const genreOptions = () =>
+  `<option value="">All genres</option>${state.genres
+    .map(([g, n]) => `<option value="${esc(g)}">${esc(g)} (${n})</option>`)
+    .join("")}`;
+
+const RESULT_OPTIONS = `
+  <option value="all">Winners &amp; nominees</option>
+  <option value="won">🏆 Winners only</option>
+  <option value="lost">Nominated, didn't win</option>`;
+
+const STATUS_OPTIONS = `
+  <option value="all">All films</option>
+  <option value="seen">Seen it</option>
+  <option value="unseen">Haven't seen</option>`;
+
+function sortOptions({ includeFriend }) {
+  return SORTS.filter(([v]) => includeFriend || v !== "friend-rating")
+    .map(([v, label]) => {
+      const needs = v === "my-rating" ? ' data-needs="user"' : v === "friend-rating" ? ' data-needs="friend"' : "";
+      return `<option value="${v}"${needs}>${label}</option>`;
+    })
+    .join("");
+}
+
+function yearRange(f) {
+  const attrs = `min="${state.minYear}" max="${state.maxYear}"`;
+  return `<div class="field"><span>Oscar year</span>
+    <div class="year-range">
+      <input type="number" name="from" placeholder="${state.minYear}" ${attrs} value="${esc(f.from)}" aria-label="From year">
+      <span>–</span>
+      <input type="number" name="to" placeholder="${state.maxYear}" ${attrs} value="${esc(f.to)}" aria-label="To year">
+    </div>
+  </div>`;
+}
+
 // Nominations that match the active category filter (all of them if none).
 function relevantNoms(m, category = state.filters.category) {
   if (!category) return m.n;
@@ -229,6 +342,7 @@ const routes = {
   friends: renderFriends,
   me: renderMe,
   user: renderUser,
+  settings: renderSettings,
 };
 
 function currentRoute() {
@@ -252,7 +366,8 @@ function refresh() {
     renderList();
   } else if (name === "friends") {
     renderFriendSections();
-  } else {
+  } else if (name !== "settings") {
+    // (Settings is left alone so live updates don't wipe unsaved changes.)
     routes[name](arg);
   }
 }
@@ -276,6 +391,7 @@ function renderAccount() {
   const name = state.profile?.displayName || state.user.displayName || "Me";
   el.innerHTML = `
     <a href="#/me" title="${esc(name)}">${avatar({ displayName: name, photoURL: state.profile?.photoURL })}</a>
+    <a href="#/settings" class="btn small" title="Settings" aria-label="Settings">⚙️</a>
     <button class="btn small" data-action="sign-out">Sign out</button>`;
 }
 
@@ -289,17 +405,6 @@ document.addEventListener("click", (e) => {
 
 function renderBrowse() {
   const f = state.filters;
-  const yearOpts = `min="${state.minYear}" max="${state.maxYear}"`;
-  const classGroups = state.classes
-    .map((cls) => {
-      const cats = state.categories.filter((c) => c.class === cls.id);
-      if (!cats.length) return "";
-      return `<optgroup label="${esc(cls.label)}">
-        <option value="class:${esc(cls.id)}">All ${esc(cls.label)} categories</option>
-        ${cats.map((c) => `<option value="cat:${esc(c.name)}">${esc(catLabel(c.name))}</option>`).join("")}
-      </optgroup>`;
-    })
-    .join("");
 
   view.innerHTML = `
     <div class="page-head">
@@ -314,49 +419,12 @@ function renderBrowse() {
       <label class="field search">Search
         <input type="search" name="q" placeholder="Film title, actor, director, song…" value="${esc(f.q)}" autocomplete="off">
       </label>
-      <label class="field">Award category
-        <select name="category"><option value="">All categories</option>${classGroups}</select>
-      </label>
-      <label class="field">Genre
-        <select name="genre"><option value="">All genres</option>
-          ${state.genres.map(([g, n]) => `<option value="${esc(g)}">${esc(g)} (${n})</option>`).join("")}
-        </select>
-      </label>
-      <label class="field">Result
-        <select name="result">
-          <option value="all">Winners &amp; nominees</option>
-          <option value="won">🏆 Winners only</option>
-          <option value="lost">Nominated, didn't win</option>
-        </select>
-      </label>
-      <div class="field"><span>Oscar year</span>
-        <div class="year-range">
-          <input type="number" name="from" placeholder="${state.minYear}" ${yearOpts} value="${esc(f.from)}" aria-label="From year">
-          <span>–</span>
-          <input type="number" name="to" placeholder="${state.maxYear}" ${yearOpts} value="${esc(f.to)}" aria-label="To year">
-        </div>
-      </div>
-      <label class="field" id="status-field">My status
-        <select name="status">
-          <option value="all">All films</option>
-          <option value="seen">Seen it</option>
-          <option value="unseen">Haven't seen</option>
-        </select>
-      </label>
-      <label class="field">Sort by
-        <select name="sort">
-          <option value="year-desc">Year (newest first)</option>
-          <option value="year-asc">Year (oldest first)</option>
-          <option value="title">Title (A–Z)</option>
-          <option value="category">Award category</option>
-          <option value="genre">Genre</option>
-          <option value="noms-desc">Most nominations</option>
-          <option value="wins-desc">Most wins</option>
-          <option value="runtime">Runtime (shortest)</option>
-          <option value="my-rating" data-needs="user">My rating</option>
-          <option value="friend-rating" data-needs="friend">Friend's rating</option>
-        </select>
-      </label>
+      <label class="field">Award category<select name="category">${categoryOptions()}</select></label>
+      <label class="field">Genre<select name="genre">${genreOptions()}</select></label>
+      <label class="field">Result<select name="result">${RESULT_OPTIONS}</select></label>
+      ${yearRange(f)}
+      <label class="field" id="status-field">My status<select name="status">${STATUS_OPTIONS}</select></label>
+      <label class="field">Sort by<select name="sort">${sortOptions({ includeFriend: true })}</select></label>
       <div class="compare-box" id="compare-box"></div>
     </form>
 
@@ -374,7 +442,7 @@ function renderBrowse() {
     const { name, value } = e.target;
     if (!(name in state.filters)) return;
     state.filters[name] = value;
-    state.shown = PAGE_SIZE;
+    state.shown = pageSize();
     clearTimeout(debounce);
     debounce = setTimeout(renderList, name === "q" ? 150 : 0);
   });
@@ -452,16 +520,24 @@ function renderList() {
   const visible = currentList.slice(0, state.shown);
   const winners = currentList.filter((m) => relevantNoms(m).some((n) => n.w)).length;
   const seenHere = state.user ? currentList.filter((m) => hasSeen(state.mine, m.id)).length : 0;
-  const filtersActive = JSON.stringify(state.filters) !== JSON.stringify({ ...DEFAULT_FILTERS, sort: state.filters.sort });
+  const filtersActive = !sameFilters(state.filters, baseFilters());
+  const resetLabel = state.user && state.settings ? "Reset to my defaults" : "Clear filters";
 
   $("#summary").innerHTML = `
     <span><strong>${plural(currentList.length, "film")}</strong> · ${winners.toLocaleString()} with a win
       ${state.user ? ` · you've seen <strong>${seenHere.toLocaleString()}</strong>` : ""}</span>
-    ${filtersActive ? `<button class="btn small" data-action="reset-filters">Clear filters</button>` : ""}`;
+    <span class="row">
+      ${filtersActive ? `<button class="btn small" data-action="reset-filters">${resetLabel}</button>` : ""}
+      <span class="seg" role="group" aria-label="Layout">
+        ${[["cards", "▦ Cards"], ["compact", "☰ Compact"]].map(([value, label]) =>
+          `<button type="button" data-action="layout" data-layout="${value}" aria-pressed="${state.layout === value}">${label}</button>`).join("")}
+      </span>
+    </span>`;
 
-  listEl.innerHTML = visible.length
-    ? visible.map(movieCard).join("")
-    : `<p class="empty">No films match those filters.</p>`;
+  const compact = state.layout === "compact";
+  listEl.classList.toggle("compact", compact);
+  if (!visible.length) listEl.innerHTML = `<p class="empty">No films match those filters.</p>`;
+  else listEl.innerHTML = compact ? compactList(visible) : visible.map(movieCard).join("");
 
   const more = $("#load-more");
   const remaining = currentList.length - visible.length;
@@ -471,7 +547,7 @@ function renderList() {
     loadObserver = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) {
         loadObserver.disconnect();
-        state.shown += PAGE_SIZE;
+        state.shown += pageSize();
         renderList();
       }
     }, { rootMargin: "400px" });
@@ -513,15 +589,7 @@ function movieCard(m) {
   const nomBadge = `<span class="nom-badge">${plural(m.n.length, "nomination")}</span>`;
   const meta = [m.y, m.g.join(", "), m.rt ? `${m.rt} min` : "", `${ordinal(m.cer)} Oscars`].filter(Boolean).join(" · ");
 
-  let side = "";
-  if (state.user && mine?.rating) side += `<span>${stars(mine.rating)}</span>`;
-  if (state.filters.friend) {
-    const theirs = entryOf(state.friendMovies.get(state.filters.friend), m.id);
-    const name = esc(friendName(state.filters.friend));
-    side += theirs?.seen
-      ? `<span class="friend-mark seen">✓ ${name}${theirs.rating ? " " + stars(theirs.rating) : ""}</span>`
-      : `<span class="friend-mark">${name} hasn't seen</span>`;
-  }
+  const side = ratingMarks(m, mine);
 
   return `
     <article class="movie-card ${seen ? "seen" : ""} ${wins ? "has-win" : ""}" data-id="${m.id}" tabindex="0">
@@ -536,20 +604,90 @@ function movieCard(m) {
     </article>`;
 }
 
+// My rating, plus the compared friend's seen status and rating.
+function ratingMarks(m, mine) {
+  let html = "";
+  if (state.user && mine?.rating) html += `<span>${stars(mine.rating)}</span>`;
+  if (state.filters.friend) {
+    const theirs = entryOf(state.friendMovies.get(state.filters.friend), m.id);
+    const name = esc(friendName(state.filters.friend));
+    html += theirs?.seen
+      ? `<span class="friend-mark seen">✓ ${name}${theirs.rating ? " " + stars(theirs.rating) : ""}</span>`
+      : `<span class="friend-mark">${name} hasn't seen</span>`;
+  }
+  return html;
+}
+
+// Compact layout: one line per film. When sorted by year, films are grouped
+// under a header for each Oscar year.
+function compactList(movies) {
+  const byYear = state.filters.sort === "year-desc" || state.filters.sort === "year-asc";
+  if (!byYear) return `<div class="row-group">${movies.map((m) => movieRow(m, true)).join("")}</div>`;
+
+  const perYear = new Map();
+  for (const m of currentList) perYear.set(m.ay, (perYear.get(m.ay) || 0) + 1);
+
+  let html = "";
+  let year = null;
+  for (const m of movies) {
+    if (m.ay !== year) {
+      if (year !== null) html += "</section>";
+      year = m.ay;
+      html += `
+        <section class="year-group">
+          <h2 class="year-head">${esc(m.n[0].ay)}
+            <span class="year-sub">${ordinal(m.cer)} Academy Awards · ${plural(perYear.get(year), "film")}</span>
+          </h2>`;
+    }
+    html += movieRow(m, false);
+  }
+  return html + "</section>";
+}
+
+function movieRow(m, showYear) {
+  const mine = entryOf(state.mine, m.id);
+  const seen = Boolean(mine?.seen);
+  // With a category filter, show which of those categories it was up for; otherwise genres.
+  const detail = state.filters.category
+    ? [...new Set(relevantNoms(m).map((n) => `${n.w ? "🏆 " : ""}${catLabel(n.c)}`))].join(", ")
+    : m.g.join(", ");
+  const winBadge = m.wins ? `<span class="win-badge">🏆 ${m.wins === 1 ? "Winner" : `${m.wins} wins`}</span>` : "";
+
+  return `
+    <div class="movie-row ${seen ? "seen" : ""} ${m.wins ? "has-win" : ""}" data-id="${m.id}" tabindex="0">
+      <button class="seen-toggle sm ${seen ? "on" : ""}" data-action="toggle-seen" aria-pressed="${seen}"
+        title="${seen ? "Seen — click to unmark" : "Mark as seen"}">${seen ? "✓" : "👁"}</button>
+      <span class="row-title">${esc(m.t)}${showYear ? ` <span class="row-year">${m.y}</span>` : ""}</span>
+      <span class="row-win">${winBadge}</span>
+      <span class="row-noms">${plural(m.n.length, "nom")}</span>
+      <span class="row-detail">${esc(detail)}</span>
+      <span class="row-side">${ratingMarks(m, mine)}</span>
+    </div>`;
+}
+
+const ITEM = ".movie-card, .movie-row";
+
 view.addEventListener("click", (e) => {
   const actionEl = e.target.closest("[data-action]");
   const action = actionEl?.dataset.action;
-  const card = e.target.closest(".movie-card");
+  const card = e.target.closest(ITEM);
 
-  if (action === "toggle-seen" && card) {
+  if (action === "layout") {
+    state.layout = actionEl.dataset.layout;
+    try {
+      localStorage.setItem(LAYOUT_KEY, state.layout);
+    } catch {}
+    state.shown = pageSize();
+    renderList();
+  } else if (action === "toggle-seen" && card) {
     e.stopPropagation();
     toggleSeen(card.dataset.id);
   } else if (action === "more") {
-    state.shown += PAGE_SIZE;
+    state.shown += pageSize();
     renderList();
   } else if (action === "reset-filters") {
-    state.filters = { ...DEFAULT_FILTERS, sort: state.filters.sort };
-    state.shown = PAGE_SIZE;
+    state.filters = baseFilters();
+    state.shown = pageSize();
     renderBrowse();
   } else if (action === "random") {
     const pool = filteredMovies();
@@ -563,7 +701,7 @@ view.addEventListener("click", (e) => {
 });
 
 view.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.classList.contains("movie-card")) openMovie(e.target.dataset.id);
+  if (e.key === "Enter" && e.target.matches(ITEM)) openMovie(e.target.dataset.id);
 });
 
 function requireUser() {
@@ -977,8 +1115,9 @@ view.addEventListener("click", async (e) => {
 });
 
 function pickTogether(uid) {
-  state.filters = { ...DEFAULT_FILTERS, friend: uid, overlap: "neither", sort: "year-desc" };
-  state.shown = PAGE_SIZE;
+  // Start from the user's defaults (e.g. Best Picture only), minus a seen/unseen filter.
+  state.filters = { ...baseFilters(), status: "all", friend: uid, overlap: "neither" };
+  state.shown = pageSize();
   location.hash = "#/browse";
 }
 
@@ -1093,6 +1232,85 @@ function renderUser(uid) {
     </section>`;
 }
 
+// ---------- Settings ----------
+
+function renderSettings() {
+  if (!state.user) {
+    view.innerHTML = signedOutPage("Settings", "Sign in to save your default filters and view.");
+    return;
+  }
+  const saved = { ...DEFAULT_FILTERS, ...state.settings?.filters };
+  const layout = state.settings?.layout || state.layout;
+
+  view.innerHTML = `
+    <div class="page-head"><div>
+      <h1>Settings</h1>
+      <p class="muted">Choose how Browse looks when you open the site. These are saved to your account and apply on every device.</p>
+    </div></div>
+
+    <form id="settings-form" class="settings">
+      <section class="panel">
+        <h2>Default view</h2>
+        <div class="choice-row">
+          <label class="choice"><input type="radio" name="layout" value="cards"> ▦ Cards <span class="muted">— details and award tags for each film</span></label>
+          <label class="choice"><input type="radio" name="layout" value="compact"> ☰ Compact <span class="muted">— one line per film, grouped by year</span></label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Default search</h2>
+        <p class="muted" style="margin-top:0">Browse starts with these filters, and "Reset to my defaults" returns to them.</p>
+        <div class="filters flat">
+          <label class="field">Award category<select name="category">${categoryOptions()}</select></label>
+          <label class="field">Genre<select name="genre">${genreOptions()}</select></label>
+          <label class="field">Result<select name="result">${RESULT_OPTIONS}</select></label>
+          ${yearRange(saved)}
+          <label class="field">My status<select name="status">${STATUS_OPTIONS}</select></label>
+          <label class="field">Sort by<select name="sort">${sortOptions({ includeFriend: false })}</select></label>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button type="button" class="btn small" id="use-current">Copy my current Browse filters</button>
+          <button type="button" class="btn small" id="use-app-defaults">Reset to app defaults</button>
+        </div>
+      </section>
+
+      <div class="row">
+        <button type="submit" class="btn primary">Save settings</button>
+        <span class="muted" id="settings-status"></span>
+      </div>
+    </form>`;
+
+  const form = $("#settings-form");
+  const fill = (filters, layoutValue) => {
+    for (const key of SAVED_FILTER_KEYS) form.elements[key].value = filters[key] ?? DEFAULT_FILTERS[key];
+    form.querySelector(`[name="layout"][value="${layoutValue}"]`).checked = true;
+  };
+  fill(saved, layout);
+
+  $("#use-current").onclick = () => fill({ ...DEFAULT_FILTERS, ...sanitizeFilters(state.filters) }, state.layout);
+  $("#use-app-defaults").onclick = () => fill(DEFAULT_FILTERS, "cards");
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector('[type="submit"]');
+    const raw = Object.fromEntries(SAVED_FILTER_KEYS.map((k) => [k, form.elements[k].value]));
+    const settings = { filters: sanitizeFilters(raw), layout: form.elements.layout.value };
+    btn.disabled = true;
+    try {
+      await fb.saveSettings(state.user.uid, settings);
+      state.settings = settings;
+      applyDefaults();
+      toast("Settings saved");
+      $("#settings-status").innerHTML = `Saved. <a href="#/browse">Go to Browse</a>`;
+    } catch (err) {
+      console.error(err);
+      toast("Couldn't save settings — please try again");
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
 // ---------- Auth state & live data ----------
 
 function stopUserSubs() {
@@ -1147,10 +1365,22 @@ function onUser(user) {
   state.incoming = [];
   state.outgoing = [];
   state.profile = null;
-  if (state.filters.friend) state.filters = { ...state.filters, friend: "", overlap: "any" };
-  if (!user && ["my-rating", "friend-rating"].includes(state.filters.sort)) state.filters.sort = "year-desc";
+  state.settings = null;
+  applyDefaults();
 
   if (user) {
+    fb.getSettings(user.uid)
+      .then((saved) => {
+        if (!saved || state.user?.uid !== user.uid) return;
+        state.settings = {
+          filters: sanitizeFilters(saved.filters),
+          layout: saved.layout === "compact" ? "compact" : "cards",
+        };
+        applyDefaults();
+        if (currentRoute().name === "browse") renderBrowse();
+        else if (currentRoute().name === "settings") renderSettings();
+      })
+      .catch((err) => console.error("Couldn't load settings", err));
     fb.getProfile(user.uid).then((p) => {
       state.profile = p;
       refresh();

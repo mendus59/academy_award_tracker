@@ -83,8 +83,13 @@ def fetch(url: str, dest: Path, refresh: bool) -> Path:
     return dest
 
 
+def clean(value: str) -> str:
+    """The source escapes some quotes (e.g. John \"Divine G\" Whitfield); unescape them."""
+    return (value or "").replace('\\"', '"').strip()
+
+
 def split(value: str) -> list[str]:
-    return [v.strip() for v in (value or "").split("|")]
+    return [clean(v) for v in (value or "").split("|")]
 
 
 def load_nominations(path: Path):
@@ -146,7 +151,7 @@ def main() -> None:
         if row["Winner"] == "True":
             nom["w"] = 1
         if row.get("Name"):
-            nom["who"] = row["Name"]
+            nom["who"] = clean(row["Name"])
         if detail and row["Class"] in DETAIL_CLASSES:
             nom["d"] = detail
         if row["Category"] != category:

@@ -202,6 +202,49 @@ textarea { width: 100%; resize: vertical; min-height: 84px; }
 .star-input button.on { color: var(--gold); }
 .star-input button:hover { transform: scale(1.1); }
 
+/* Layout toggle */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); padding: 4px 10px; cursor: pointer; font-size: 0.85rem; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--gold-soft); color: var(--gold-text); font-weight: 600; }
+
+/* Compact layout: one line per film */
+.movie-list.compact { gap: 20px; }
+.row-group, .year-group {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.year-head {
+  margin: 0; padding: 12px 14px 8px; font-size: 1.5rem; border-bottom: 2px solid var(--gold);
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.year-sub { font: 500 0.8rem Inter, system-ui, sans-serif; color: var(--muted); }
+.movie-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 14px; min-height: 40px;
+  border-top: 1px solid var(--border); cursor: pointer; white-space: nowrap;
+}
+.year-head + .movie-row, .row-group > .movie-row:first-child { border-top: 0; }
+.movie-row.has-win { background: color-mix(in srgb, var(--gold-soft) 35%, var(--surface)); }
+.movie-row:hover, .movie-row:focus-visible { background: var(--surface-2); outline: none; }
+.movie-row.seen { box-shadow: inset 3px 0 var(--ok); }
+.movie-row .win-badge { margin-left: 0; flex: none; }
+.row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.row-year { color: var(--muted); font-weight: 400; }
+/* Fixed-width columns so badges, counts and genres line up row to row. */
+.row-win { flex: none; width: 88px; display: flex; justify-content: flex-end; }
+.row-noms { flex: none; width: 64px; text-align: right; color: var(--muted); font-size: 0.8rem; }
+.row-detail { flex: 0 0 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 0.82rem; }
+.row-side { flex: none; display: flex; gap: 8px; font-size: 0.8rem; color: var(--muted); }
+.row-side:empty { display: none; }
+.seen-toggle.sm { width: 26px; height: 26px; font-size: 0.75rem; border-width: 1.5px; }
+
+@media (max-width: 640px) {
+  .row-detail, .row-noms { display: none; }
+  .row-win { width: auto; }
+  .row-win:empty { display: none; }
+  .movie-row { padding: 6px 10px; gap: 8px; }
+  .row-side .friend-mark:not(.seen) { display: none; }
+}
+
 .load-more { display: flex; justify-content: center; padding: 18px; }
 
 @media (max-width: 640px) {
@@ -268,6 +311,18 @@ textarea { width: 100%; resize: vertical; min-height: 84px; }
 .review-item p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .profile-head { display: flex; align-items: center; gap: 14px; padding: 24px 0 8px; flex-wrap: wrap; }
 .profile-head .grow { flex: 1; }
+
+/* ---------- Settings ---------- */
+.settings { display: grid; gap: 16px; }
+.filters.flat { background: none; border: 0; box-shadow: none; padding: 0; }
+.choice-row { display: grid; gap: 8px; }
+.choice {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-weight: 500;
+}
+.choice .muted { font-weight: 400; font-size: 0.88rem; }
+.choice:has(input:checked) { border-color: var(--gold); background: var(--gold-soft); }
+.choice input { accent-color: var(--gold); margin: 0; }
 
 /* ---------- Footer & toast ---------- */
 .site-footer { color: var(--muted); font-size: 0.8rem; padding: 32px 16px 40px; text-align: center; }

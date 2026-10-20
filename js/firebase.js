@@ -5,6 +5,7 @@
 //   emailIndex/{emailLower}           { uid }                     lookup-by-email only (no listing)
 //   users/{uid}/movies/{imdbId}       { seen, rating, review, updatedAt }               owner + friends can read
 //   users/{uid}/friends/{friendUid}   { since }
+//   users/{uid}/settings/prefs        { filters, layout, updatedAt }                     owner only
 //   friendRequests/{fromUid}_{toUid}  { from, to, createdAt }
 
 import { firebaseConfig } from "./firebase-config.js";
@@ -120,6 +121,17 @@ export function saveMovieEntry(uid, movieId, entry) {
   };
   if (!clean.seen && !clean.rating && !clean.review) return F.deleteDoc(docRef);
   return F.setDoc(docRef, { ...clean, updatedAt: F.serverTimestamp() });
+}
+
+// ---------- Settings (private to the user) ----------
+
+export async function getSettings(uid) {
+  const snap = await F.getDoc(ref("users", uid, "settings", "prefs"));
+  return snap.exists() ? snap.data() : null;
+}
+
+export function saveSettings(uid, { filters, layout }) {
+  return F.setDoc(ref("users", uid, "settings", "prefs"), { filters, layout, updatedAt: F.serverTimestamp() });
 }
 
 // ---------- Friends ----------

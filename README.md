@@ -4,7 +4,9 @@ Track every Academy Award–nominated film you've seen, rate and review them, an
 
 - **Every nominated film.** 5,264 films and 10,876 nominations from the 1st Academy Awards (1927/28) through the 98th (2025 films), including every film an actor was nominated for. Winners are labeled 🏆.
 - **Browse and filter** by title or person (actor, director, songwriter), award category, genre, Oscar year range, and winner or nominee. Sort by year, title, award category, genre, number of nominations or wins, runtime, or rating.
+- **Two layouts.** Cards show details and award tags. Compact shows one line per film, grouped under a header for each Oscar year when sorted by year.
 - **Accounts** (Google or email/password). Mark films as seen, rate them 1–5 stars, and write short reviews of up to 500 characters.
+- **Settings.** Each user can save a default search (e.g. Best Picture winners only, oldest first) and a default layout. These apply whenever they open the site, on any device.
 - **Friends.** Send and accept friend requests, see friends' seen films, ratings and reviews, and compare lists: films you've *both* seen, films *neither* of you has seen ("pick a film together"), and so on.
 
 It's a static site (plain HTML/CSS/JS with no build step) hosted on **GitHub Pages**, with **Firebase** Authentication and Cloud Firestore for users and data.
@@ -42,6 +44,7 @@ firebase.json           Firebase CLI config (points at firestore.rules)
 The rules make sure that:
 - only you can change your own seen list, ratings and reviews;
 - only you and your accepted friends can read them;
+- your settings are private to you;
 - a friendship can only be created by the person accepting a pending friend request;
 - emails can be looked up one at a time (to add a friend) but never listed.
 
@@ -106,4 +109,5 @@ Notes on the data:
 | `emailIndex/{email}` | `uid` | single lookups by signed-in users |
 | `users/{uid}/movies/{imdbId}` | `seen`, `rating` (0–5), `review` (≤500 chars), `updatedAt` | the user and their friends |
 | `users/{uid}/friends/{friendUid}` | `since` | the two friends |
+| `users/{uid}/settings/prefs` | `filters` (default category, genre, result, years, status, sort), `layout` (`cards`/`compact`) | the user only |
 | `friendRequests/{from}_{to}` | `from`, `to`, `createdAt` | sender and recipient |

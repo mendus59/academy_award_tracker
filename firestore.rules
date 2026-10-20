@@ -47,6 +47,17 @@ service cloud.firestore {
           && request.resource.data.review.size() <= 500;
       }
 
+      // Default Browse filters and layout. Private to the owner.
+      match /settings/{docId} {
+        allow read, delete: if isUser(uid);
+        allow create, update: if isUser(uid)
+          && docId == 'prefs'
+          && request.resource.data.keys().hasOnly(['filters', 'layout', 'updatedAt'])
+          && request.resource.data.layout in ['cards', 'compact']
+          && request.resource.data.filters is map
+          && request.resource.data.filters.keys().hasOnly(['category', 'genre', 'from', 'to', 'result', 'status', 'sort']);
+      }
+
       // Friendship is stored on both sides. It can only be created by the person
       // accepting a pending friend request (friendRequests/{from}_{to}).
       match /friends/{friendId} {
