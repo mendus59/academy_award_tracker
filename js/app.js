@@ -262,7 +262,7 @@ function sortOptions({ includeFriend }) {
 
 function yearRange(f) {
   const attrs = `min="${state.minYear}" max="${state.maxYear}"`;
-  return `<div class="field"><span>Oscar year</span>
+  return `<div class="field"><span>Award year</span>
     <div class="year-range">
       <input type="number" name="from" placeholder="${state.minYear}" ${attrs} value="${esc(f.from)}" aria-label="From year">
       <span>–</span>
@@ -390,9 +390,7 @@ function renderAccount() {
   }
   const name = state.profile?.displayName || state.user.displayName || "Me";
   el.innerHTML = `
-    <a href="#/me" title="${esc(name)}">${avatar({ displayName: name, photoURL: state.profile?.photoURL })}</a>
-    <a href="#/settings" class="btn small" title="Settings" aria-label="Settings">⚙️</a>
-    <button class="btn small" data-action="sign-out">Sign out</button>`;
+    <a href="#/me" title="${esc(name)}">${avatar({ displayName: name, photoURL: state.profile?.photoURL })}</a>    <button class="btn small" data-action="sign-out">Sign out</button>`;
 }
 
 document.addEventListener("click", (e) => {
@@ -407,12 +405,12 @@ function renderBrowse() {
   const f = state.filters;
 
   view.innerHTML = `
-    <div class="page-head">
+    <div class="page-head band">
       <div>
-        <h1>Every Oscar-nominated film</h1>
-        <p class="muted">${plural(state.movies.length, "film")} from ${state.minYear} to ${state.maxYear}. Winners are marked 🏆.</p>
+        <h1>Every Academy Award nominee</h1>
+        <p>${plural(state.movies.length, "film")} from ${state.minYear} to ${state.maxYear}. Winners are marked 🏆.</p>
       </div>
-      <button class="btn" data-action="random">🎲 Pick a random film</button>
+      <button class="btn ghost-light" data-action="random">🎲 Pick a random film</button>
     </div>
 
     <form class="filters" id="filters" onsubmit="return false">
@@ -587,7 +585,7 @@ function movieCard(m) {
   const totalWins = m.wins;
   const winBadge = totalWins ? `<span class="win-badge">🏆 ${totalWins === 1 ? "Winner" : `${totalWins} wins`}</span>` : "";
   const nomBadge = `<span class="nom-badge">${plural(m.n.length, "nomination")}</span>`;
-  const meta = [m.y, m.g.join(", "), m.rt ? `${m.rt} min` : "", `${ordinal(m.cer)} Oscars`].filter(Boolean).join(" · ");
+  const meta = [m.y, m.g.join(", "), m.rt ? `${m.rt} min` : "", `${ordinal(m.cer)} Academy Awards`].filter(Boolean).join(" · ");
 
   const side = ratingMarks(m, mine);
 
@@ -1147,7 +1145,7 @@ function statsHtml(map) {
       ${b ? `<div class="progress"><span style="width:${pct(a, b)}"></span></div>` : ""}</div>`;
   return `<div class="stat-grid">
     ${stat(seen.length.toLocaleString(), `of ${state.movies.length.toLocaleString()} nominated films seen`, seen.length, state.movies.length)}
-    ${stat(winnersSeen.toLocaleString(), `of ${winners.toLocaleString()} Oscar-winning films`, winnersSeen, winners)}
+    ${stat(winnersSeen.toLocaleString(), `of ${winners.toLocaleString()} award-winning films`, winnersSeen, winners)}
     ${stat(bpSeen, `of ${bpWinners.length} Best Picture winners`, bpSeen, bpWinners.length)}
     ${stat(avg, `average rating (${plural(ratings.length, "rating")})`)}
   </div>`;

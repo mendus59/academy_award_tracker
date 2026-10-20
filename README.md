@@ -1,10 +1,10 @@
-# 🏆 Oscar Tracker
+# Nominated: an Academy Award film tracker
 
 Track every Academy Award–nominated film you've seen, rate and review them, and find something to watch with friends.
 
 - **Every nominated film.** 5,264 films and 10,876 nominations from the 1st Academy Awards (1927/28) through the 98th (2025 films), including every film an actor was nominated for. Winners are labeled 🏆.
-- **Browse and filter** by title or person (actor, director, songwriter), award category, genre, Oscar year range, and winner or nominee. Sort by year, title, award category, genre, number of nominations or wins, runtime, or rating.
-- **Two layouts.** Cards show details and award tags. Compact shows one line per film, grouped under a header for each Oscar year when sorted by year.
+- **Browse and filter** by title or person (actor, director, songwriter), award category, genre, award year range, and winner or nominee. Sort by year, title, award category, genre, number of nominations or wins, runtime, or rating.
+- **Two layouts.** Cards show details and award tags. Compact shows one line per film, grouped under a header for each award year when sorted by year.
 - **Accounts** (Google or email/password). Mark films as seen, rate them 1–5 stars, and write short reviews of up to 500 characters.
 - **Settings.** Each user can save a default search (e.g. Best Picture winners only, oldest first) and a default layout. These apply whenever they open the site, on any device.
 - **Friends.** Send and accept friend requests, see friends' seen films, ratings and reviews, and compare lists: films you've *both* seen, films *neither* of you has seen ("pick a film together"), and so on.
@@ -99,7 +99,7 @@ The push triggers the Pages workflow, which publishes the new data.
 Notes on the data:
 - Scientific & Technical awards are left out because they honor technologies rather than films.
 - When one nomination covered several films (common in the early years, e.g. Janet Gaynor's Best Actress win for *7th Heaven*, *Street Angel* and *Sunrise*), every one of those films is listed with that nomination.
-- The "Oscar year" is the film-eligibility year (the ceremony is held the following year).
+- The "award year" is the film-eligibility year (the ceremony is held the following year).
 
 ## Firestore data model
 
@@ -111,3 +111,13 @@ Notes on the data:
 | `users/{uid}/friends/{friendUid}` | `since` | the two friends |
 | `users/{uid}/settings/prefs` | `filters` (default category, genre, result, years, status, sort), `layout` (`cards`/`compact`) | the user only |
 | `friendRequests/{from}_{to}` | `from`, `to`, `createdAt` | sender and recipient |
+
+## Design and trademarks
+
+The visual style (white and charcoal surfaces, gold accents, a burgundy top strip, uppercase letter-spaced type) is an original design built from general styling choices. It uses no logos, artwork, photography, page text or fonts from any other site.
+
+- **Typeface:** [Jost](https://fonts.google.com/specimen/Jost), licensed under the SIL Open Font License.
+- **Icons:** standard Unicode emoji only (🏆 ★ 👁 🎲). No statuette imagery is used.
+- **Name:** "Nominated" deliberately avoids the Academy's marks.
+
+"Oscar®," "Oscars®," "Academy Awards®" and the Oscar® statuette are registered trademarks and service marks of the Academy of Motion Picture Arts and Sciences. This project is not affiliated with, sponsored by or endorsed by the Academy. The marks are used only to describe the awards and their nominees, and the site footer carries this notice. If you rename or rebrand the app, keep the name and logo free of those marks.

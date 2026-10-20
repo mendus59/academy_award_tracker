@@ -3,25 +3,31 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oscar Tracker</title>
-  <meta name="description" content="Track every Academy Award–nominated film you've seen, rate and review them, and find something to watch with friends.">
+  <title>Nominated · Film Tracker</title>
+  <meta name="description" content="Track every Academy Award–nominated film you've seen, rate and review them, and find something to watch with friends. An independent fan project.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏆</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
+  <div class="top-strip">Every Academy Award nominee, 1927 to today<span class="extra"> · Track · Rate · Watch with friends</span></div>
+
   <header class="site-header">
-    <div class="header-inner">
-      <a href="#/browse" class="brand"><span class="brand-mark">🏆</span><span>Oscar Tracker</span></a>
-      <nav class="main-nav" id="main-nav">
-        <a href="#/browse" data-route="browse">Browse</a>
-        <a href="#/friends" data-route="friends">Friends <span class="badge" id="request-badge" hidden></span></a>
-        <a href="#/me" data-route="me">My Movies</a>
-      </nav>
+    <div class="header-top">
+      <a href="#/browse" class="brand" aria-label="Nominated home">
+        <span class="brand-name">Nominated</span>
+        <span class="brand-tag">The film tracker</span>
+      </a>
       <div class="account" id="account"></div>
     </div>
+    <nav class="main-nav" id="main-nav">
+      <a href="#/browse" data-route="browse">Browse</a>
+      <a href="#/friends" data-route="friends">Friends <span class="badge" id="request-badge" hidden></span></a>
+      <a href="#/me" data-route="me">My Movies</a>
+      <a href="#/settings" data-route="settings">Settings</a>
+    </nav>
   </header>
 
   <div class="notice" id="config-notice" hidden>
@@ -30,13 +36,21 @@
   </div>
 
   <main id="view" class="container">
-    <p class="loading">Loading the Academy's archives…</p>
+    <p class="loading">Loading the archive…</p>
   </main>
 
-  <footer class="site-footer container">
-    Nomination data: <a href="https://github.com/DLu/oscar_data" target="_blank" rel="noopener">DLu/oscar_data</a>
-    · Genres &amp; runtimes: <a href="https://developer.imdb.com/non-commercial-datasets/" target="_blank" rel="noopener">IMDb non-commercial datasets</a>
-    · <span id="data-date"></span>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>Nomination data: <a href="https://github.com/DLu/oscar_data" target="_blank" rel="noopener">DLu/oscar_data</a></span>
+      <span>Genres &amp; runtimes: <a href="https://developer.imdb.com/non-commercial-datasets/" target="_blank" rel="noopener">IMDb non-commercial datasets</a></span>
+      <span id="data-date"></span>
+      <p class="disclaimer">
+        Nominated is an independent fan project. It is not affiliated with, sponsored by or endorsed by the
+        Academy of Motion Picture Arts and Sciences. “Oscar®,” “Oscars®,” “Academy Awards®” and the Oscar® statuette
+        are registered trademarks and service marks of the Academy of Motion Picture Arts and Sciences.
+        They are used here only to identify the awards and their nominees.
+      </p>
+    </div>
   </footer>
 
   <dialog id="modal" class="modal"><div id="modal-body"></div></dialog>
