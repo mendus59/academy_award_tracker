@@ -315,13 +315,15 @@ textarea { width: 100%; resize: vertical; min-height: 84px; }
 /* Fixed-width columns so badges, counts and genres line up row to row. */
 .row-win { flex: none; width: 92px; display: flex; justify-content: flex-end; }
 .row-noms { flex: none; width: 64px; text-align: right; color: var(--muted); font-size: 0.82rem; }
+.row-wins { flex: none; width: 56px; text-align: right; color: var(--gold-text); font-size: 0.82rem; font-weight: 500; }
+.row-wins.none { color: var(--muted); font-weight: 400; opacity: 0.6; }
 .row-detail { flex: 0 0 30%; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 0.85rem; }
 .row-side { flex: none; display: flex; gap: 8px; font-size: 0.82rem; color: var(--muted); }
 .row-side:empty { display: none; }
 .seen-toggle.sm { width: 26px; height: 26px; font-size: 0.75rem; }
 
 @media (max-width: 640px) {
-  .row-detail, .row-noms { display: none; }
+  .row-detail, .row-noms, .row-wins { display: none; }
   .row-win { width: auto; }
   .row-win:empty { display: none; }
   .movie-row { padding: 6px 10px; gap: 8px; }

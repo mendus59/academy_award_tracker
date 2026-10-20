@@ -835,6 +835,7 @@ function movieRow(m, showYear) {
       <span class="row-title">${esc(m.t)}${showYear ? ` <span class="row-year">${m.y}</span>` : ""}</span>
       <span class="row-win">${winBadge}</span>
       <span class="row-noms">${plural(m.n.length, "nom")}</span>
+      <span class="row-wins ${m.wins ? "" : "none"}" title="Total wins, all categories">${plural(m.wins, "win")}</span>
       <span class="row-detail">${esc(detail)}</span>
       <span class="row-side">${ratingMarks(m, mine)}</span>
     </div>`;
