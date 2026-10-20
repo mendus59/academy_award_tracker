@@ -13,8 +13,8 @@ function loadLayout() {
 
 const DEFAULT_FILTERS = {
   q: "",
-  category: "",
-  genre: "",
+  category: [], // "cat:<CATEGORY>" or "class:<CLASS>" values; any match counts
+  genre: [], // any match counts
   from: "",
   to: "",
   result: "all",
@@ -195,14 +195,16 @@ function sanitizeFilters(raw = {}) {
     const n = Number(v);
     return v !== "" && Number.isInteger(n) && n >= state.minYear && n <= state.maxYear ? String(n) : "";
   };
-  const category = raw.category || "";
-  if (
-    (category.startsWith("class:") && state.classes.some((c) => c.id === category.slice(6))) ||
-    (category.startsWith("cat:") && state.catIndex.has(category.slice(4)))
-  ) {
-    clean.category = category;
-  }
-  if (state.genres.some(([g]) => g === raw.genre)) clean.genre = raw.genre;
+  // Older saved settings stored a single string; accept both.
+  const list = (v) => [...new Set(Array.isArray(v) ? v : v ? [v] : [])];
+  const validCat = (c) =>
+    typeof c === "string" &&
+    ((c.startsWith("class:") && state.classes.some((x) => x.id === c.slice(6))) ||
+      (c.startsWith("cat:") && state.catIndex.has(c.slice(4))));
+  const categories = list(raw.category).filter(validCat);
+  if (categories.length) clean.category = categories;
+  const genres = list(raw.genre).filter((g) => state.genres.some(([x]) => x === g));
+  if (genres.length) clean.genre = genres;
   if (year(raw.from || "")) clean.from = year(raw.from);
   if (year(raw.to || "")) clean.to = year(raw.to);
   if (["won", "lost"].includes(raw.result)) clean.result = raw.result;
@@ -212,8 +214,8 @@ function sanitizeFilters(raw = {}) {
 }
 
 // What Browse starts with, and what "Reset" returns to.
-const baseFilters = () => ({ ...DEFAULT_FILTERS, ...(state.user ? state.settings?.filters : null) });
-const sameFilters = (a, b) => Object.keys(DEFAULT_FILTERS).every((k) => a[k] === b[k]);
+const baseFilters = () => structuredClone({ ...DEFAULT_FILTERS, ...(state.user ? state.settings?.filters : null) });
+const sameFilters = (a, b) => Object.keys(DEFAULT_FILTERS).every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
 
 function applyDefaults() {
   state.filters = baseFilters();
@@ -223,23 +225,164 @@ function applyDefaults() {
 
 // ---------- Shared filter controls ----------
 
-function categoryOptions() {
-  return `<option value="">All categories</option>${state.classes
-    .map((cls) => {
-      const cats = state.categories.filter((c) => c.class === cls.id);
-      if (!cats.length) return "";
-      return `<optgroup label="${esc(cls.label)}">
-        <option value="class:${esc(cls.id)}">All ${esc(cls.label)} categories</option>
-        ${cats.map((c) => `<option value="cat:${esc(c.name)}">${esc(catLabel(c.name))}</option>`).join("")}
-      </optgroup>`;
-    })
-    .join("")}`;
+// Checkbox dropdown for picking several values.
+// groups: [{ id?, label?, options: [{ value, label, count? }] }]. A group with an id gets an
+// "All <label>" box; when every option in it is checked the value collapses to groupPrefix + id.
+function createPicker(container, { label, allLabel, groups, groupPrefix = "", searchable = false, values = [], onChange }) {
+  container.classList.add("field", "picker");
+  container.innerHTML = `
+    <span>${esc(label)}</span>
+    <button type="button" class="picker-btn" aria-haspopup="true" aria-expanded="false">
+      <span class="picker-summary"></span><span class="caret" aria-hidden="true">▾</span>
+    </button>
+    <div class="picker-pop" hidden>
+      <div class="picker-tools">
+        ${searchable ? `<input type="search" class="picker-search" placeholder="Find…" aria-label="Find ${esc(label)}">` : ""}
+        <button type="button" class="btn small" data-picker-clear>Clear</button>
+      </div>
+      <div class="picker-list">
+        ${groups.map((g, gi) => `
+          <div class="picker-group">
+            ${g.id ? `<label class="picker-opt picker-group-head"><input type="checkbox" data-group-toggle="${gi}"> All ${esc(g.label)}</label>` : ""}
+            ${g.options.map((o) => `
+              <label class="picker-opt"><input type="checkbox" value="${esc(o.value)}" data-in="${gi}">
+                <span>${esc(o.label)}</span>${o.count != null ? `<span class="count">${o.count}</span>` : ""}</label>`).join("")}
+          </div>`).join("")}
+      </div>
+    </div>`;
+
+  const btn = $(".picker-btn", container);
+  const pop = $(".picker-pop", container);
+  const search = $(".picker-search", container);
+  const boxes = [...container.querySelectorAll("input[data-in]")];
+  const inGroup = (gi) => boxes.filter((b) => b.dataset.in === String(gi));
+  const labelOf = new Map(groups.flatMap((g) => g.options.map((o) => [o.value, o.label])));
+  groups.forEach((g) => g.id && labelOf.set(groupPrefix + g.id, `All ${g.label}`));
+
+  function get() {
+    return groups.flatMap((g, gi) => {
+      const mine = inGroup(gi);
+      const checked = mine.filter((b) => b.checked);
+      return g.id && mine.length && checked.length === mine.length ? [groupPrefix + g.id] : checked.map((b) => b.value);
+    });
+  }
+  function sync() {
+    groups.forEach((g, gi) => {
+      if (!g.id) return;
+      const mine = inGroup(gi);
+      const n = mine.filter((b) => b.checked).length;
+      const toggle = $(`[data-group-toggle="${gi}"]`, container);
+      toggle.checked = n === mine.length;
+      toggle.indeterminate = n > 0 && n < mine.length;
+    });
+    const v = get();
+    $(".picker-summary", container).textContent = !v.length
+      ? allLabel
+      : v.length <= 2
+        ? v.map((x) => labelOf.get(x)).join(", ")
+        : `${labelOf.get(v[0])} + ${v.length - 1} more`;
+    btn.classList.toggle("has-value", v.length > 0);
+  }
+  function set(next = []) {
+    const want = new Set(next);
+    boxes.forEach((b) => {
+      const g = groups[b.dataset.in];
+      b.checked = want.has(b.value) || Boolean(g.id && want.has(groupPrefix + g.id));
+    });
+    sync();
+  }
+  const changed = () => {
+    sync();
+    onChange?.(get());
+  };
+
+  container.addEventListener("change", (e) => {
+    const gi = e.target.dataset.groupToggle;
+    if (gi != null) inGroup(gi).forEach((b) => (b.checked = e.target.checked));
+    if (e.target.type === "checkbox") changed();
+  });
+  $("[data-picker-clear]", container).onclick = () => {
+    boxes.forEach((b) => (b.checked = false));
+    changed();
+  };
+  search?.addEventListener("input", () => {
+    const q = normalize(search.value.trim());
+    container.querySelectorAll(".picker-group").forEach((groupEl) => {
+      let any = false;
+      groupEl.querySelectorAll(".picker-opt:not(.picker-group-head)").forEach((opt) => {
+        opt.hidden = Boolean(q) && !normalize(opt.textContent).includes(q);
+        any ||= !opt.hidden;
+      });
+      groupEl.hidden = !any;
+      const head = $(".picker-group-head", groupEl);
+      if (head) head.hidden = Boolean(q);
+    });
+  });
+
+  function open() {
+    closePickers();
+    pop.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    container.classList.add("open");
+    // Keep the popover on screen.
+    pop.style.left = "0px";
+    const r = pop.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    let shift = r.right > vw - 8 ? vw - 8 - r.right : 0;
+    if (r.left + shift < 8) shift = 8 - r.left;
+    pop.style.left = `${shift}px`;
+    (search || boxes[0])?.focus();
+  }
+  container._closePicker = () => {
+    pop.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    container.classList.remove("open");
+  };
+  btn.onclick = () => (pop.hidden ? open() : container._closePicker());
+
+  set(values);
+  return { get, set };
 }
 
-const genreOptions = () =>
-  `<option value="">All genres</option>${state.genres
-    .map(([g, n]) => `<option value="${esc(g)}">${esc(g)} (${n})</option>`)
-    .join("")}`;
+function closePickers(except) {
+  document.querySelectorAll(".picker.open").forEach((p) => p !== except && p._closePicker?.());
+}
+document.addEventListener("click", (e) => closePickers(e.target.closest(".picker")));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.querySelector(".picker.open")) {
+    const open = document.querySelector(".picker.open");
+    closePickers();
+    $(".picker-btn", open)?.focus();
+  }
+});
+
+const categoryPicker = (container, values, onChange) =>
+  createPicker(container, {
+    label: "Award category",
+    allLabel: "All categories",
+    searchable: true,
+    groupPrefix: "class:",
+    groups: state.classes
+      .map((cls) => ({
+        id: cls.id,
+        label: cls.label,
+        options: state.categories
+          .filter((c) => c.class === cls.id)
+          .map((c) => ({ value: `cat:${c.name}`, label: catLabel(c.name) })),
+      }))
+      .filter((g) => g.options.length),
+    values,
+    onChange,
+  });
+
+const genrePicker = (container, values, onChange) =>
+  createPicker(container, {
+    label: "Genre",
+    allLabel: "All genres",
+    groups: [{ options: state.genres.map(([g, n]) => ({ value: g, label: g, count: n })) }],
+    values,
+    onChange,
+  });
 
 const RESULT_OPTIONS = `
   <option value="all">Winners &amp; nominees</option>
@@ -272,13 +415,24 @@ function yearRange(f) {
 }
 
 // Nominations that match the active category filter (all of them if none).
-function relevantNoms(m, category = state.filters.category) {
-  if (!category) return m.n;
-  if (category.startsWith("class:")) {
-    const cls = category.slice(6);
-    return m.n.filter((n) => state.categories[state.catIndex.get(n.c)].class === cls);
+let selectedCache = { key: null, set: null };
+function selectedCategories(values) {
+  // Filter lists are replaced, never mutated, so the array itself is a safe cache key.
+  if (selectedCache.key !== values) {
+    const set = new Set();
+    for (const v of values) {
+      if (v.startsWith("class:")) state.categories.forEach((c) => c.class === v.slice(6) && set.add(c.name));
+      else if (v.startsWith("cat:")) set.add(v.slice(4));
+    }
+    selectedCache = { key: values, set };
   }
-  return m.n.filter((n) => n.c === category.slice(4));
+  return selectedCache.set;
+}
+
+function relevantNoms(m, category = state.filters.category) {
+  if (!category?.length) return m.n;
+  const selected = selectedCategories(category);
+  return m.n.filter((n) => selected.has(n.c));
 }
 
 function filteredMovies() {
@@ -290,7 +444,7 @@ function filteredMovies() {
 
   const list = state.movies.filter((m) => {
     if (q && !m._search.includes(q)) return false;
-    if (f.genre && !m.g.includes(f.genre)) return false;
+    if (f.genre.length && !f.genre.some((g) => m.g.includes(g))) return false;
     if (from && m.ay < from) return false;
     if (to && m.ay > to) return false;
 
@@ -417,8 +571,8 @@ function renderBrowse() {
       <label class="field search">Search
         <input type="search" name="q" placeholder="Film title, actor, director, song…" value="${esc(f.q)}" autocomplete="off">
       </label>
-      <label class="field">Award category<select name="category">${categoryOptions()}</select></label>
-      <label class="field">Genre<select name="genre">${genreOptions()}</select></label>
+      <div id="pick-category"></div>
+      <div id="pick-genre"></div>
       <label class="field">Result<select name="result">${RESULT_OPTIONS}</select></label>
       ${yearRange(f)}
       <label class="field" id="status-field">My status<select name="status">${STATUS_OPTIONS}</select></label>
@@ -431,7 +585,14 @@ function renderBrowse() {
     <div class="load-more" id="load-more"></div>`;
 
   const form = $("#filters");
-  for (const name of ["category", "genre", "result", "status", "sort"]) form.elements[name].value = f[name];
+  for (const name of ["result", "status", "sort"]) form.elements[name].value = f[name];
+  const pickerChanged = (name) => (values) => {
+    state.filters[name] = values;
+    state.shown = pageSize();
+    renderList();
+  };
+  categoryPicker($("#pick-category"), f.category, pickerChanged("category"));
+  genrePicker($("#pick-genre"), f.genre, pickerChanged("genre"));
   renderCompareBox();
   renderStatusFilter();
 
@@ -558,9 +719,10 @@ function movieCard(m) {
   const wins = noms.filter((n) => n.w).length;
   const mine = entryOf(state.mine, m.id);
   const seen = Boolean(mine?.seen);
-  const filteringCat = Boolean(state.filters.category);
+  const filteringCat = state.filters.category.length > 0;
 
-  // One chip per category, winners first.
+  // One chip per category. With a category filter, only wins in the selected
+  // categories are highlighted in gold; other wins are shown muted.
   const chipMap = new Map();
   for (const n of m.n) {
     const chip = chipMap.get(n.c) || { cat: n.c, count: 0, won: false, match: false };
@@ -569,21 +731,25 @@ function movieCard(m) {
     chip.match ||= filteringCat && noms.includes(n);
     chipMap.set(n.c, chip);
   }
+  const highlighted = (c) => c.won && (!filteringCat || c.match);
   const chipList = [...chipMap.values()].sort(
-    (a, b) => b.match - a.match || b.won - a.won || state.catIndex.get(a.cat) - state.catIndex.get(b.cat),
+    (a, b) =>
+      b.match - a.match || highlighted(b) - highlighted(a) || b.won - a.won ||
+      state.catIndex.get(a.cat) - state.catIndex.get(b.cat),
   );
   const MAX_CHIPS = 5;
   const chips = chipList
     .slice(0, MAX_CHIPS)
-    .map(
-      (c) =>
-        `<span class="chip ${c.won ? "win" : ""} ${c.match ? "match" : ""}">${c.won ? "🏆 " : ""}${esc(catLabel(c.cat))}${c.count > 1 ? ` ×${c.count}` : ""}</span>`,
-    )
+    .map((c) => {
+      const cls = highlighted(c) ? "win" : c.won ? "won-other" : "";
+      const count = c.count > 1 ? ` ×${c.count}` : "";
+      const text = highlighted(c) ? `🏆 ${esc(catLabel(c.cat))}${count}` : `${esc(catLabel(c.cat))}${count}${c.won ? " · won" : ""}`;
+      return `<span class="chip ${cls} ${c.match ? "match" : ""}">${text}</span>`;
+    })
     .join("");
   const extra = chipList.length > MAX_CHIPS ? `<span class="chip more">+${chipList.length - MAX_CHIPS} more</span>` : "";
 
-  const totalWins = m.wins;
-  const winBadge = totalWins ? `<span class="win-badge">🏆 ${totalWins === 1 ? "Winner" : `${totalWins} wins`}</span>` : "";
+  const winBadge = winBadgeHtml(m, wins, filteringCat);
   const nomBadge = `<span class="nom-badge">${plural(m.n.length, "nomination")}</span>`;
   const meta = [m.y, m.g.join(", "), m.rt ? `${m.rt} min` : "", `${ordinal(m.cer)} Academy Awards`].filter(Boolean).join(" · ");
 
@@ -642,17 +808,28 @@ function compactList(movies) {
   return html + "</section>";
 }
 
+// Gold badge counting only wins in the selected categories (all wins when unfiltered).
+function winBadgeHtml(m, relevantWins, filteringCat) {
+  const wins = filteringCat ? relevantWins : m.wins;
+  if (!wins) return "";
+  const title = filteringCat ? ' title="Wins in the selected categories"' : "";
+  return `<span class="win-badge"${title}>🏆 ${wins === 1 ? "Winner" : `${wins} wins`}</span>`;
+}
+
 function movieRow(m, showYear) {
   const mine = entryOf(state.mine, m.id);
   const seen = Boolean(mine?.seen);
+  const filteringCat = state.filters.category.length > 0;
+  const noms = relevantNoms(m);
+  const wins = noms.filter((n) => n.w).length;
   // With a category filter, show which of those categories it was up for; otherwise genres.
-  const detail = state.filters.category
-    ? [...new Set(relevantNoms(m).map((n) => `${n.w ? "🏆 " : ""}${catLabel(n.c)}`))].join(", ")
+  const detail = filteringCat
+    ? [...new Set(noms.map((n) => `${n.w ? "🏆 " : ""}${catLabel(n.c)}`))].join(", ")
     : m.g.join(", ");
-  const winBadge = m.wins ? `<span class="win-badge">🏆 ${m.wins === 1 ? "Winner" : `${m.wins} wins`}</span>` : "";
+  const winBadge = winBadgeHtml(m, wins, filteringCat);
 
   return `
-    <div class="movie-row ${seen ? "seen" : ""} ${m.wins ? "has-win" : ""}" data-id="${m.id}" tabindex="0">
+    <div class="movie-row ${seen ? "seen" : ""} ${wins ? "has-win" : ""}" data-id="${m.id}" tabindex="0">
       <button class="seen-toggle sm ${seen ? "on" : ""}" data-action="toggle-seen" aria-pressed="${seen}"
         title="${seen ? "Seen — click to unmark" : "Mark as seen"}">${seen ? "✓" : "👁"}</button>
       <span class="row-title">${esc(m.t)}${showYear ? ` <span class="row-year">${m.y}</span>` : ""}</span>
@@ -749,6 +926,10 @@ function openMovie(id) {
   const m = state.byId.get(id);
   if (!m) return;
 
+  // With a category filter, gold rows are only wins in the selected categories.
+  const filteringCat = state.filters.category.length > 0;
+  const matched = new Set(relevantNoms(m));
+
   // Group nominations by ceremony.
   let rows = "";
   let lastCer = null;
@@ -759,10 +940,16 @@ function openMovie(id) {
     }
     const people = [n.who, n.d ? (n.c.startsWith("MUSIC") ? `“${n.d}”` : `as ${n.d}`) : ""].filter(Boolean);
     rows += `
-      <tr class="${n.w ? "win" : ""}">
+      <tr class="${n.w ? (matched.has(n) ? "win" : "win-other") : ""} ${filteringCat && matched.has(n) ? "match" : ""}">
         <td class="cat">${esc(catLabel(n.as || n.c))}</td>
         <td>${people.map(esc).join("<br>")}</td>
-        <td class="result">${n.w ? `<span class="result-won">🏆 WON</span>` : `<span class="result-nom">Nominated</span>`}</td>
+        <td class="result">${
+          !n.w
+            ? `<span class="result-nom">Nominated</span>`
+            : matched.has(n)
+              ? `<span class="result-won">🏆 WON</span>`
+              : `<span class="result-won-other">Won</span>`
+        }</td>
       </tr>`;
   }
 
@@ -1259,8 +1446,8 @@ function renderSettings() {
         <h2>Default search</h2>
         <p class="muted" style="margin-top:0">Browse starts with these filters, and "Reset to my defaults" returns to them.</p>
         <div class="filters flat">
-          <label class="field">Award category<select name="category">${categoryOptions()}</select></label>
-          <label class="field">Genre<select name="genre">${genreOptions()}</select></label>
+          <div id="settings-category"></div>
+          <div id="settings-genre"></div>
           <label class="field">Result<select name="result">${RESULT_OPTIONS}</select></label>
           ${yearRange(saved)}
           <label class="field">My status<select name="status">${STATUS_OPTIONS}</select></label>
@@ -1279,8 +1466,16 @@ function renderSettings() {
     </form>`;
 
   const form = $("#settings-form");
+  const pickers = {
+    category: categoryPicker($("#settings-category"), saved.category),
+    genre: genrePicker($("#settings-genre"), saved.genre),
+  };
   const fill = (filters, layoutValue) => {
-    for (const key of SAVED_FILTER_KEYS) form.elements[key].value = filters[key] ?? DEFAULT_FILTERS[key];
+    for (const key of SAVED_FILTER_KEYS) {
+      const value = filters[key] ?? DEFAULT_FILTERS[key];
+      if (pickers[key]) pickers[key].set(value);
+      else form.elements[key].value = value;
+    }
     form.querySelector(`[name="layout"][value="${layoutValue}"]`).checked = true;
   };
   fill(saved, layout);
@@ -1291,7 +1486,7 @@ function renderSettings() {
   form.onsubmit = async (e) => {
     e.preventDefault();
     const btn = form.querySelector('[type="submit"]');
-    const raw = Object.fromEntries(SAVED_FILTER_KEYS.map((k) => [k, form.elements[k].value]));
+    const raw = Object.fromEntries(SAVED_FILTER_KEYS.map((k) => [k, pickers[k] ? pickers[k].get() : form.elements[k].value]));
     const settings = { filters: sanitizeFilters(raw), layout: form.elements.layout.value };
     btn.disabled = true;
     try {
