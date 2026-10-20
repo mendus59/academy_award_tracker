@@ -20,6 +20,8 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
+from fetch_posters import apply_posters, load_posters  # cached TMDB posters (no key needed)
+
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path(__file__).resolve().parent / ".cache"
 OUT = ROOT / "data" / "movies.json"
@@ -190,6 +192,7 @@ def main() -> None:
         out_movies.append(entry)
 
     out_movies.sort(key=lambda m: (-m["ay"], m["t"]))
+    with_posters = apply_posters(out_movies, load_posters())
 
     data = {
         "generated": date.today().isoformat(),
@@ -206,7 +209,7 @@ def main() -> None:
     wins = sum(1 for m in out_movies for n in m["n"] if n.get("w"))
     print(
         f"Wrote {OUT.relative_to(ROOT)}: {len(out_movies)} films, {noms} nominations, "
-        f"{wins} wins ({missing} films without genre data)",
+        f"{wins} wins ({missing} films without genre data, {with_posters} with posters)",
         file=sys.stderr,
     )
 

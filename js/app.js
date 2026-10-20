@@ -146,6 +146,32 @@ function stars(rating) {
   return `<span class="stars" aria-label="${rating} out of 5 stars">${"★".repeat(rating)}<span class="off">${"★".repeat(5 - rating)}</span></span>`;
 }
 
+// Posters come from TMDB's image CDN (paths are added to movies.json by scripts/fetch_posters.py).
+const POSTER_BASE = "https://image.tmdb.org/t/p/";
+
+function posterPlaceholder(m, cls) {
+  const letter = m.t.replace(/^(the|a|an)\s+/i, "").trim().charAt(0).toUpperCase() || "?";
+  return `<span class="poster placeholder ${cls}" aria-hidden="true">${esc(letter)}</span>`;
+}
+
+function posterHtml(m, size, cls = "") {
+  if (!m.p || !/^\/[\w.-]+$/.test(m.p)) return posterPlaceholder(m, cls);
+  return `<img class="poster ${cls}" src="${POSTER_BASE}${size}${m.p}" alt="" loading="lazy" decoding="async"
+    data-id="${m.id}" data-cls="${cls}" width="154" height="231">`;
+}
+
+// A poster that fails to load is swapped for the lettered placeholder.
+document.addEventListener(
+  "error",
+  (e) => {
+    const img = e.target;
+    if (img.tagName !== "IMG" || !img.classList.contains("poster")) return;
+    const m = state.byId.get(img.dataset.id);
+    if (m) img.outerHTML = posterPlaceholder(m, img.dataset.cls);
+  },
+  true,
+);
+
 let toastTimer;
 function toast(message) {
   const el = $("#toast");
@@ -757,6 +783,7 @@ function movieCard(m) {
 
   return `
     <article class="movie-card ${seen ? "seen" : ""} ${wins ? "has-win" : ""}" data-id="${m.id}" tabindex="0">
+      ${posterHtml(m, "w154", "card-poster")}
       <button class="seen-toggle ${seen ? "on" : ""}" data-action="toggle-seen" aria-pressed="${seen}"
         title="${seen ? "Seen — click to unmark" : "Mark as seen"}">${seen ? "✓" : "👁"}</button>
       <div>
@@ -963,7 +990,8 @@ function openMovie(id) {
   showModal(`
     <div class="modal-inner">
       <div class="modal-head">
-        <div>
+        ${posterHtml(m, "w342", "modal-poster")}
+        <div class="modal-title">
           <h2>${esc(m.t)}</h2>
           <div class="muted">${esc(meta)}</div>
           <div style="margin-top:8px">

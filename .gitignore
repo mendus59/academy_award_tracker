@@ -1,3 +1,8 @@
+# Local secrets (e.g. TMDB token). Copy .env.example to .env and fill it in.
+.env
+.env.*
+!.env.example
+
 scripts/.cache/
 __pycache__/
 .firebase/

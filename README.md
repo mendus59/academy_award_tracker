@@ -14,6 +14,7 @@ It's a static site (plain HTML/CSS/JS with no build step) hosted on **GitHub Pag
 ## Project layout
 
 ```
+.env.example            Template for the git-ignored .env (TMDB token)
 index.html              App shell
 css/styles.css          Styles (light and dark mode)
 js/app.js               UI: browse, filters, movie details, friends, profiles
@@ -21,6 +22,7 @@ js/firebase.js          Firebase Auth + Firestore calls
 js/firebase-config.js   ← your Firebase project settings go here
 data/movies.json        Generated film and nomination data
 scripts/build_movies.py Regenerates data/movies.json
+scripts/fetch_posters.py Adds TMDB poster paths (cached in scripts/posters.json)
 firestore.rules         Firestore security rules
 firebase.json           Firebase CLI config (points at firestore.rules)
 .firebaserc             Firebase project id for the CLI
@@ -100,6 +102,33 @@ Notes on the data:
 - Scientific & Technical awards are left out because they honor technologies rather than films.
 - When one nomination covered several films (common in the early years, e.g. Janet Gaynor's Best Actress win for *7th Heaven*, *Street Angel* and *Sunrise*), every one of those films is listed with that nomination.
 - The "award year" is the film-eligibility year (the ceremony is held the following year).
+
+## Movie posters (TMDB)
+
+Cards and the film details dialog show posters from [TMDB](https://www.themoviedb.org/). Films without one get a lettered placeholder.
+
+To fetch posters (needed once, then again for new films after each ceremony):
+
+1. Create a free TMDB account. Under **Settings → API**, request an API key (choose "Personal"/non-commercial use).
+2. Copy the **API Read Access Token** (the long one) into the `.env` file at the repo root. If it doesn't exist, copy `.env.example` to `.env` first:
+
+   ```
+   TMDB_READ_ACCESS_TOKEN=eyJ...
+   ```
+
+   `.env` is listed in `.gitignore`, so it stays on your machine. An environment variable with the same name takes priority over the file.
+3. Run:
+
+   ```bash
+   python scripts/fetch_posters.py
+   ```
+
+   This looks up every film by IMDb ID (a few minutes for about 5,300 films) and saves the results to `scripts/posters.json`. It also writes the poster paths into `data/movies.json`.
+4. Commit `scripts/posters.json` and `data/movies.json`.
+
+Later runs only look up films that aren't in the cache. Add `--retry-missing` to re-check films that had no poster. `build_movies.py` re-applies cached posters automatically, so rebuilding the data doesn't need the token.
+
+Never commit `.env`. Only poster paths are stored; images load directly from TMDB's image server. TMDB's terms require attribution, which is in the site footer ("This product uses the TMDB API but is not endorsed or certified by TMDB"). Their [logo guidelines](https://www.themoviedb.org/about/logos-attribution) also ask for one of the TMDB logos; download one there and add it next to the footer credit. TMDB is free for non-commercial use; a commercial app needs a commercial agreement with TMDB.
 
 ## Firestore data model
 
