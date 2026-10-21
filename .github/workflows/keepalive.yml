@@ -1,0 +1,25 @@
+name: Keep scheduled workflows enabled
+
+# GitHub disables scheduled workflows in a public repository after 60 days without
+# activity, which would silently stop the yearly awards jobs between seasons.
+# Re-enabling them monthly keeps them running.
+on:
+  schedule:
+    - cron: "0 12 1 * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-enable scheduled workflows
+        run: |
+          for wf in awards-dates.yml awards-nominations.yml awards-winners.yml keepalive.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable" && echo "Enabled $wf"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}

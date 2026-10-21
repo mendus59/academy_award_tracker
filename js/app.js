@@ -58,6 +58,8 @@ const state = {
   incoming: [],
   outgoing: [],
   settings: null, // { filters, layout } saved to the signed-in user's account
+  schedule: [], // data/schedule.json editions (upcoming dates and automation progress)
+  generated: null, // movies.json build time, used to spot live updates
 
   filters: { ...DEFAULT_FILTERS },
   layout: loadLayout(), // "cards" or "compact" (one line per film)
@@ -187,14 +189,33 @@ function friendName(uid) {
 
 // ---------- Data ----------
 
-async function loadMovies() {
-  const res = await fetch("data/movies.json");
-  if (!res.ok) throw new Error(`Couldn't load movie data (${res.status})`);
-  const data = await res.json();
+// "no-cache" revalidates with the server each time (cheap 304s), so updates published on
+// nominations morning and ceremony night show up without waiting for the browser cache.
+async function fetchJson(path) {
+  const res = await fetch(path, { cache: "no-cache" });
+  if (!res.ok) throw new Error(`Couldn't load ${path} (${res.status})`);
+  return res.json();
+}
 
+async function loadMovies() {
+  applyData(await fetchJson("data/movies.json"));
+}
+
+async function loadSchedule() {
+  try {
+    state.schedule = (await fetchJson("data/schedule.json")).editions || [];
+  } catch {
+    state.schedule = [];
+  }
+}
+
+function applyData(data) {
+  state.generated = data.generated;
   state.classes = data.classes;
   state.categories = data.categories;
-  data.categories.forEach((c, i) => state.catIndex.set(c.name, i));
+  state.catIndex = new Map(data.categories.map((c, i) => [c.name, i]));
+  state.byId = new Map();
+  selectedCache = { key: null, set: null };
 
   const genreCounts = new Map();
   for (const m of data.movies) {
@@ -209,7 +230,8 @@ async function loadMovies() {
   state.genres = [...genreCounts].sort((a, b) => a[0].localeCompare(b[0]));
   state.minYear = Math.min(...data.movies.map((m) => m.ay));
   state.maxYear = Math.max(...data.movies.map((m) => m.ay));
-  $("#data-date").textContent = `Data updated ${data.generated}`;
+  const generated = new Date(data.generated);
+  $("#data-date").textContent = `Data updated ${isNaN(generated) ? data.generated : generated.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}`;
 }
 
 // ---------- Default filters (user settings) ----------
@@ -1643,16 +1665,115 @@ function onUser(user) {
   renderAccount();
 }
 
+// ---------- Upcoming awards banner & live updates ----------
+
+// Dates come from data/schedule.json, which the yearly "Awards: check dates" workflow keeps
+// up to date (see README → Yearly automation). The other awards jobs record progress there.
+const HOUR = 3_600_000;
+
+// What's happening right now, if anything: nominations being added or a ceremony underway.
+function liveEvent(now = new Date()) {
+  for (const e of state.schedule) {
+    const nomsAt = e.nominationsAt && new Date(e.nominationsAt);
+    const ceremonyAt = e.ceremonyAt && new Date(e.ceremonyAt);
+    if (nomsAt && !e.nominationsCaptured && now >= nomsAt && now - nomsAt < 24 * HOUR) return { kind: "nominations", edition: e };
+    if (ceremonyAt && !e.winnersComplete && now >= ceremonyAt - HOUR && now - ceremonyAt < 12 * HOUR) return { kind: "ceremony", edition: e };
+  }
+  return null;
+}
+
+const localDate = (iso) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+const fmtDate = (date, opts) => date.toLocaleDateString("en-US", opts);
+const LONG = { weekday: "short", month: "short", day: "numeric", year: "numeric" };
+const SHORT = { month: "short", day: "numeric", year: "numeric" };
+
+function untilText(date, today) {
+  const days = Math.round((date - today) / 86_400_000);
+  return days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`;
+}
+
+function renderTopStrip(now = new Date()) {
+  const strip = $("#top-strip");
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const live = liveEvent(now);
+  const season = state.schedule.find((s) => s.ceremony && localDate(s.ceremony) >= today);
+  const recent = state.schedule.find((s) => s.ceremony && localDate(s.ceremony) < today && today - localDate(s.ceremony) <= 7 * 24 * HOUR);
+  let wide;
+  let narrow;
+
+  if (live?.kind === "ceremony") {
+    const name = `${ordinal(live.edition.edition)} Academy Awards`;
+    wide = `<span class="live-dot" aria-hidden="true"></span>${name} · <strong>Live now</strong> · winners update automatically`;
+    narrow = `<span class="live-dot" aria-hidden="true"></span>${name} · Live now`;
+  } else if (live?.kind === "nominations") {
+    const name = `${ordinal(live.edition.edition)} Academy Awards`;
+    wide = `<span class="live-dot" aria-hidden="true"></span>${name} · <strong>Nominations announced today</strong> · adding them now`;
+    narrow = `<span class="live-dot" aria-hidden="true"></span>Nominations announced today`;
+  } else if (recent && (!season || localDate(season.ceremony) - today > 7 * 24 * HOUR)) {
+    const name = `${ordinal(recent.edition)} Academy Awards`;
+    wide = `${name} · <strong>${recent.winnersComplete ? "All winners announced" : "Winners are in"}</strong> · filter by category to see them`;
+    narrow = `${name} · Winners announced`;
+  }
+  if (wide) {
+    strip.innerHTML = `<span class="wide">${wide}</span><span class="narrow">${narrow}</span>`;
+    return;
+  }
+  if (!season) return; // keep the default text until new dates are added
+
+  const name = `${ordinal(season.edition)} Academy Awards`;
+  const ceremony = localDate(season.ceremony);
+  const noms = season.nominations && localDate(season.nominations);
+
+  if (noms && noms >= today) {
+    wide = `${name} · Nominations <strong>${fmtDate(noms, LONG)}</strong> (${untilText(noms, today)}) · Ceremony <strong>${fmtDate(ceremony, LONG)}</strong>`;
+    narrow = `Nominations ${fmtDate(noms, SHORT)} · Ceremony ${fmtDate(ceremony, SHORT)}`;
+  } else if (!noms) {
+    wide = `${name} · Ceremony <strong>${fmtDate(ceremony, LONG)}</strong> · Nominations date to be announced`;
+    narrow = `${name}: ${fmtDate(ceremony, SHORT)}`;
+  } else {
+    wide = `${name} · Nominations are out · Ceremony <strong>${fmtDate(ceremony, LONG)}</strong> (${untilText(ceremony, today)})`;
+    narrow = `${name}: ${fmtDate(ceremony, SHORT)} (${untilText(ceremony, today)})`;
+  }
+  strip.innerHTML = `<span class="wide">${wide}</span><span class="narrow">${narrow}</span>`;
+  strip.title = "Dates announced by the Academy; subject to change";
+}
+
+// While nominations are being added or a ceremony is underway, check for fresh data every
+// 90 seconds and update the page in place (the automation redeploys after each change).
+const LIVE_POLL_MS = 90_000;
+
+async function checkForUpdates() {
+  renderTopStrip();
+  if (!liveEvent() || document.hidden) return;
+  try {
+    const [data] = await Promise.all([fetchJson("data/movies.json"), loadSchedule()]);
+    if (data.generated !== state.generated) {
+      applyData(data);
+      refresh();
+      toast(liveEvent()?.kind === "nominations" ? "New nominations added" : "Winners updated");
+    }
+    renderTopStrip();
+  } catch (err) {
+    console.warn("Live update failed", err);
+  }
+}
+
 // ---------- Boot ----------
 
 async function main() {
   $("#config-notice").hidden = fb.isConfigured;
   try {
-    await loadMovies();
+    await Promise.all([loadMovies(), loadSchedule()]);
   } catch (err) {
     view.innerHTML = `<p class="empty">${esc(err.message)}</p>`;
     return;
   }
+  renderTopStrip();
+  setInterval(checkForUpdates, LIVE_POLL_MS);
+  document.addEventListener("visibilitychange", () => !document.hidden && checkForUpdates());
   window.addEventListener("hashchange", route);
   route();
   renderAccount();

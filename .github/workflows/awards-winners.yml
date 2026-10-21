@@ -1,0 +1,59 @@
+name: "Awards: winners"
+
+# On ceremony day, publishes winners as they're announced. From an hour before the ceremony
+# (per data/schedule.json) one long-running job checks every minute and redeploys the site
+# each time new winners are confirmed, until every category has a winner. If GitHub's 6-hour
+# job limit is reached first, the next hourly run picks up where it left off; it never
+# stops on its own until all categories are captured (and opens an issue if that takes
+# more than 12 hours after the ceremony).
+# Runs hourly February-May; each run exits in seconds when no ceremony is in progress.
+on:
+  schedule:
+    - cron: "5 * * 2-5 *"
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: "Ceremony number, e.g. 99 (leave empty for the scheduled one)"
+        required: false
+      force:
+        description: "Run now, ignoring the ceremony window (needs an edition)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write  # to trigger the Pages deploy
+  issues: write
+
+# One watcher at a time; a run triggered while one is watching waits, then exits quickly
+# if the first one finished the job.
+concurrency:
+  group: awards-winners
+  cancel-in-progress: false
+
+env:
+  ARGS: ${{ inputs.edition && format('--edition {0}', inputs.edition) || '' }} ${{ inputs.force && '--force' || '' }}
+
+jobs:
+  winners:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Is a ceremony in progress?
+        id: gate
+        run: python scripts/automation.py winners --check $ARGS
+      - name: Configure git
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Watch for winners and publish them
+        if: steps.gate.outputs.run == 'true'
+        run: python scripts/automation.py winners --publish --interval 60 --max-minutes 340 $ARGS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TMDB_READ_ACCESS_TOKEN: ${{ secrets.TMDB_READ_ACCESS_TOKEN }}

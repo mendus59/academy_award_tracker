@@ -1,0 +1,25 @@
+{
+  "timezone": "America/Los_Angeles",
+  "editions": [
+    {
+      "edition": 99,
+      "nominations": "2027-01-21",
+      "ceremony": "2027-03-14",
+      "nominationsCaptured": null,
+      "winnersComplete": null,
+      "source": "https://press.oscars.org/news/academy-and-abc-announce-show-dates-99th-and-100th-oscarsr",
+      "nominationsAt": "2027-01-21T13:30:00Z",
+      "ceremonyAt": "2027-03-14T23:00:00Z"
+    },
+    {
+      "edition": 100,
+      "nominations": null,
+      "ceremony": "2028-03-05",
+      "nominationsCaptured": null,
+      "winnersComplete": null,
+      "source": "https://press.oscars.org/news/academy-and-abc-announce-show-dates-99th-and-100th-oscarsr",
+      "nominationsAt": null,
+      "ceremonyAt": "2028-03-06T00:00:00Z"
+    }
+  ]
+}

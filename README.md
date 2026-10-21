@@ -23,6 +23,9 @@ js/firebase-config.js   ← your Firebase project settings go here
 data/movies.json        Generated film and nomination data
 scripts/build_movies.py Regenerates data/movies.json
 scripts/fetch_posters.py Adds TMDB poster paths (cached in scripts/posters.json)
+scripts/automation.py   Yearly jobs: dates, nominations, live winners (with wiki_awards.py, resolve_ids.py)
+scripts/live/           Nominations/winners scraped by the automation
+data/schedule.json      Upcoming dates + automation progress (also drives the banner)
 firestore.rules         Firestore security rules
 firebase.json           Firebase CLI config (points at firestore.rules)
 .firebaserc             Firebase project id for the CLI
@@ -102,6 +105,29 @@ Notes on the data:
 - Scientific & Technical awards are left out because they honor technologies rather than films.
 - When one nomination covered several films (common in the early years, e.g. Janet Gaynor's Best Actress win for *7th Heaven*, *Street Angel* and *Sunrise*), every one of those films is listed with that nomination.
 - The "award year" is the film-eligibility year (the ceremony is held the following year).
+
+## Yearly automation
+
+Three GitHub Actions workflows keep the site current each awards season with no manual work. All three read and update [`data/schedule.json`](data/schedule.json), which holds each ceremony's dates and what has been captured so far. The site's top banner reads the same file.
+
+| Workflow | When it runs | What it does |
+|---|---|---|
+| **Awards: check dates** (`awards-dates.yml`) | Daily from the day after the ceremony through May 31, then the 1st of each month | Reads the next ceremony's **nominations announcement** and **ceremony** dates from the "Key dates" table of its Wikipedia article and saves them. The Academy usually announces them in mid-to-late April, so daily checks catch them within a day; May 1 is covered. Monthly runs pick up any later date changes. If the dates still aren't known by June 1, it opens a GitHub issue. |
+| **Awards: nominations** (`awards-nominations.yml`) | Hourly, Jan 10 – Feb 15; does nothing outside the window | From the announcement time (5:30 a.m. PT by default) it fetches every category and nominee: film, people, character or song, and country. It matches each film to IMDb (via Wikidata, then TMDB, then IMDb's own data) and runs the **full** data build, so new nominees get genres, runtime and posters like every other film, plus anything the build adds in future. It retries hourly for 24 hours until every category and film is captured. If something is still missing, it publishes what it has and opens an issue. |
+| **Awards: winners** (`awards-winners.yml`) | Hourly, Feb – May; does nothing outside the window | From an hour before the ceremony (4 p.m. PT by default), one job checks Wikipedia every minute and redeploys the site each time new winners are confirmed. The site shows them within a few minutes. A winner is published only after it has appeared on two checks in a row, which guards against brief vandal edits. The job doesn't stop until every category has a winner; if GitHub's 6-hour job limit hits first, the next hourly run continues. It opens an issue if winners are still incomplete 12 hours after the ceremony. |
+| **Keep scheduled workflows enabled** (`keepalive.yml`) | Monthly | GitHub switches off scheduled workflows after 60 quiet days; this keeps them on between seasons. |
+
+**How live data fits in.** Scraped results are saved to `scripts/live/<ceremony>.json`. `build_movies.py` uses them for a ceremony that [DLu/oscar_data](https://github.com/DLu/oscar_data) doesn't have yet, or has fewer winners for. Once that curated dataset catches up, it takes over again. On nominations morning and ceremony night the site checks for new data every 90 seconds and updates in place. The banner switches to "Nominations announced today" or "Live now".
+
+**One-time setup:**
+1. Add your TMDB token as a repository secret: **Settings → Secrets and variables → Actions → New repository secret**, named `TMDB_READ_ACCESS_TOKEN`. It's used for posters and for matching films to IMDb.
+2. Pages must deploy via Actions (see above). The jobs push data commits to `main` and then trigger the deploy. If you add branch protection to `main`, allow GitHub Actions to push.
+
+**Manual runs and fixes:**
+- Every workflow has **Run workflow** on the Actions tab. For nominations or winners you can enter a ceremony number and tick **force** to run immediately, outside the scheduled window.
+- To correct dates or announcement times, edit `data/schedule.json`. Times are Pacific and optional: `"nominationsTime": "05:30"`, `"ceremonyTime": "16:00"`. The `nominationsAt` and `ceremonyAt` fields are calculated automatically.
+- To re-run a step that already finished, clear `nominationsCaptured` or `winnersComplete` for that ceremony.
+- Locally, `python scripts/automation.py dates|nominations|winners` writes files without committing. Add `--now 2027-01-21T14:00Z` to pretend it's another time, and `--force --edition 99` to skip the time checks.
 
 ## Movie posters (TMDB)
 

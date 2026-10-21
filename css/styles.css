@@ -89,6 +89,14 @@ code { background: var(--surface-2); padding: 0.1em 0.35em; border-radius: var(-
   background: var(--burgundy); color: #fff; text-align: center;
   font-size: 0.72rem; padding: 7px 16px;
 }
+.top-strip .narrow { display: none; }
+.live-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #fff;
+  margin-right: 8px; vertical-align: 1px; animation: live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes live-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.top-strip strong { font-weight: 600; }
 .site-header { background: var(--surface); border-bottom: 1px solid var(--border); }
 .header-top {
   max-width: 1120px; margin: 0 auto; padding: 14px 16px 10px;
@@ -134,7 +142,8 @@ code { background: var(--surface-2); padding: 0.1em 0.35em; border-radius: var(-
   .brand-tag { display: none; }
   .account { grid-column: 2; }
   .main-nav { justify-content: flex-start; overflow-x: auto; gap: 20px; }
-  .top-strip .extra { display: none; }
+  .top-strip .wide { display: none; }
+  .top-strip .narrow { display: inline; }
 }
 
 .notice {

@@ -17,7 +17,7 @@ import gzip
 import json
 import sys
 import urllib.request
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fetch_posters import apply_posters, load_posters  # cached TMDB posters (no key needed)
@@ -25,6 +25,7 @@ from fetch_posters import apply_posters, load_posters  # cached TMDB posters (no
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path(__file__).resolve().parent / ".cache"
 OUT = ROOT / "data" / "movies.json"
+LIVE_DIR = Path(__file__).resolve().parent / "live"  # scraped by scripts/automation.py
 
 OSCARS_URL = "https://raw.githubusercontent.com/DLu/oscar_data/main/oscars.csv"
 IMDB_URL = "https://datasets.imdbws.com/title.basics.tsv.gz"
@@ -94,21 +95,59 @@ def split(value: str) -> list[str]:
     return [clean(v) for v in (value or "").split("|")]
 
 
-def load_nominations(path: Path):
+def read_rows(path: Path) -> list[dict]:
     with path.open(encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f, delimiter="\t"):
-            if row["Class"] in EXCLUDED_CLASSES:
+        return [row for row in csv.DictReader(f, delimiter="\t") if row["Class"] not in EXCLUDED_CLASSES]
+
+
+def live_rows(path: Path) -> tuple[int, list[dict]]:
+    """Rows in oscars.csv shape from a live file (scripts/live/<edition>.json)."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    edition = int(data["edition"])
+    rows = []
+    for cat in data["categories"]:
+        for n in cat["nominees"]:
+            if not n.get("filmId"):
+                continue  # not yet matched to IMDb; reported by automation.py
+            rows.append({
+                "Ceremony": str(edition), "Year": str(edition + 1926), "Class": cat["class"],
+                "CanonicalCategory": cat["canonical"], "Category": cat["category"],
+                "Film": n["film"], "FilmId": n["filmId"], "Name": n.get("who", ""),
+                "Winner": "True" if n.get("winner") else "", "Detail": n.get("detail", ""),
+            })
+    return edition, rows
+
+
+def merge_live(rows: list[dict]) -> list[dict]:
+    """Use live data for a ceremony when oscar_data doesn't have it yet, or has fewer
+    winners (i.e. on and just after ceremony day). Honorary awards stay from oscar_data."""
+    def wins(rs):
+        return sum(r["Winner"] == "True" for r in rs)
+
+    for path in sorted(LIVE_DIR.glob("*.json")):
+        edition, live = live_rows(path)
+        if not live:
+            continue
+        in_edition = lambda r: r["Ceremony"] == str(edition) and r["Class"] != "Special"  # noqa: E731
+        dlu = [r for r in rows if in_edition(r)]
+        if not dlu or wins(live) > wins(dlu):
+            rows = [r for r in rows if not in_edition(r)] + live
+            print(f"Ceremony {edition}: using live data ({len(live)} nominations, {wins(live)} winners)", file=sys.stderr)
+    return rows
+
+
+def load_nominations(rows: list[dict]):
+    for row in rows:
+        ids = split(row["FilmId"])
+        titles = split(row["Film"])
+        details = split(row.get("Detail") or "")
+        for i, film_id in enumerate(ids):
+            if not film_id.startswith("tt"):
                 continue
-            ids = split(row["FilmId"])
-            titles = split(row["Film"])
-            details = split(row.get("Detail") or "")
-            for i, film_id in enumerate(ids):
-                if not film_id.startswith("tt"):
-                    continue
-                title = titles[i] if i < len(titles) else titles[0]
-                # Multi-film nominations list one detail per film; otherwise share it.
-                detail = details[i] if len(details) == len(ids) else (details[0] if len(ids) == 1 else "")
-                yield film_id, title, row, detail
+            title = titles[i] if i < len(titles) else titles[0]
+            # Multi-film nominations list one detail per film; otherwise share it.
+            detail = details[i] if len(details) == len(ids) else (details[0] if len(ids) == 1 else "")
+            yield film_id, title, row, detail
 
 
 def load_imdb(path: Path, wanted: set[str]) -> dict[str, dict]:
@@ -141,7 +180,7 @@ def main() -> None:
     movies: dict[str, dict] = {}
     categories: dict[str, str] = {}  # canonical category -> class
 
-    for film_id, title, row, detail in load_nominations(oscars_path):
+    for film_id, title, row, detail in load_nominations(merge_live(read_rows(oscars_path))):
         category = row["CanonicalCategory"]
         categories.setdefault(category, row["Class"])
         movie = movies.setdefault(film_id, {"id": film_id, "t": title, "n": []})
@@ -195,7 +234,7 @@ def main() -> None:
     with_posters = apply_posters(out_movies, load_posters())
 
     data = {
-        "generated": date.today().isoformat(),
+        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": "DLu/oscar_data + IMDb non-commercial datasets",
         "classes": [{"id": c, "label": CLASS_LABELS[c]} for c in CLASS_ORDER],
         "categories": [{"name": c, "class": categories[c]} for c in ordered_categories],

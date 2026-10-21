@@ -1,0 +1,57 @@
+name: "Awards: nominations"
+
+# On nominations day, adds every new nominee to the site with the same data as other films
+# (genres, runtime, poster, ...), because it runs the full build pipeline.
+# Runs hourly through the usual announcement season; each run exits in seconds unless
+# data/schedule.json says the announcement was within the last 24 hours. Inside that window
+# it retries every hour until every category and film is captured, then stops. If it still
+# isn't complete after 24 hours it publishes what it has and opens an issue.
+on:
+  schedule:
+    - cron: "40 * 10-31 1 *"
+    - cron: "40 * 1-15 2 *"
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: "Ceremony number, e.g. 99 (leave empty for the scheduled one)"
+        required: false
+      force:
+        description: "Run now, ignoring the announcement window (needs an edition)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write  # to trigger the Pages deploy
+  issues: write
+
+concurrency:
+  group: awards-nominations
+  cancel-in-progress: false
+
+env:
+  ARGS: ${{ inputs.edition && format('--edition {0}', inputs.edition) || '' }} ${{ inputs.force && '--force' || '' }}
+
+jobs:
+  nominations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Is it nominations time?
+        id: gate
+        run: python scripts/automation.py nominations --check $ARGS
+      - name: Configure git
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Fetch nominations and rebuild data
+        if: steps.gate.outputs.run == 'true'
+        run: python scripts/automation.py nominations --publish $ARGS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TMDB_READ_ACCESS_TOKEN: ${{ secrets.TMDB_READ_ACCESS_TOKEN }}

@@ -1,0 +1,40 @@
+name: "Awards: check dates"
+
+# Finds the next ceremony's nominations-announcement and ceremony dates and saves them to
+# data/schedule.json (which the other awards jobs and the site banner read).
+# The Academy usually announces them in mid-to-late April, so this checks daily from the
+# day after the ceremony through May (covering May 1), then monthly to catch changes.
+# If the dates still aren't known after May, it opens an issue.
+on:
+  schedule:
+    - cron: "17 15 16-31 3 *"  # daily, second half of March
+    - cron: "17 15 * 4,5 *"    # daily, April and May
+    - cron: "17 15 1 * *"      # 1st of every month
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write  # to trigger the Pages deploy
+  issues: write
+
+concurrency:
+  group: awards-dates
+  cancel-in-progress: false
+
+jobs:
+  dates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Check for announced dates
+        run: python scripts/automation.py dates --publish
+        env:
+          GH_TOKEN: ${{ github.token }}
