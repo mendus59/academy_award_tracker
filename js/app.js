@@ -19,12 +19,18 @@ const DEFAULT_FILTERS = {
   to: "",
   result: "all",
   status: "all",
-  friend: "",
+  friends: [], // uids of friends being compared (at most MAX_COMPARE)
   overlap: "any",
   sort: "year-desc",
 };
 
 // Filters a user can save as their defaults (search text and friend comparison aren't).
+// Comparing reads each selected friend's whole seen list (one Firestore read per film they've
+// marked; the free tier is 50,000 reads/day for the whole project), and each compared friend
+// adds a mark to every card. Five keeps both bounded. See README → Comparing with friends.
+const MAX_COMPARE = 5;
+const FRIEND_DATA_TTL = 10 * 60_000; // reuse a loaded friend list for 10 minutes
+
 const SAVED_FILTER_KEYS = ["category", "genre", "from", "to", "result", "status", "sort"];
 const SORTS = [
   ["year-desc", "Year (newest first)"],
@@ -36,7 +42,7 @@ const SORTS = [
   ["wins-desc", "Most wins"],
   ["runtime", "Runtime (shortest)"],
   ["my-rating", "My rating"],
-  ["friend-rating", "Friend's rating"],
+  ["friend-rating", "Friends' rating"],
 ];
 
 const state = {
@@ -54,7 +60,9 @@ const state = {
   mine: new Map(), // movieId -> { seen, rating, review, updatedAt }
   friends: [], // uids
   friendProfiles: new Map(),
-  friendMovies: new Map(), // uid -> Map(movieId -> entry)
+  friendMovies: new Map(), // uid -> Map(movieId -> entry), loaded on demand (comparing / profile)
+  friendLoadedAt: new Map(), // uid -> time the list above was fetched
+  friendEntries: new Map(), // "uid/movieId" -> entry or null, single-film lookups from the details dialog
   incoming: [],
   outgoing: [],
   settings: null, // { filters, layout } saved to the signed-in user's account
@@ -68,7 +76,7 @@ const state = {
 const pageSize = () => PAGE_SIZE[state.layout];
 state.shown = pageSize();
 
-const subs = { user: [], friendMovies: new Map() };
+const subs = { user: [] };
 
 // ---------- Helpers ----------
 
@@ -148,7 +156,7 @@ function stars(rating) {
   return `<span class="stars" aria-label="${rating} out of 5 stars">${"★".repeat(rating)}<span class="off">${"★".repeat(5 - rating)}</span></span>`;
 }
 
-// Posters come from TMDB's image CDN (paths are added to movies.json by scripts/fetch_posters.py).
+// Posters come from TMDB's image CDN (paths are added to movies.json by scripts/fetch_tmdb.py).
 const POSTER_BASE = "https://image.tmdb.org/t/p/";
 
 function posterPlaceholder(m, cls) {
@@ -276,7 +284,7 @@ function applyDefaults() {
 // Checkbox dropdown for picking several values.
 // groups: [{ id?, label?, options: [{ value, label, count? }] }]. A group with an id gets an
 // "All <label>" box; when every option in it is checked the value collapses to groupPrefix + id.
-function createPicker(container, { label, allLabel, groups, groupPrefix = "", searchable = false, values = [], onChange }) {
+function createPicker(container, { label, allLabel, groups, groupPrefix = "", searchable = false, max = 0, values = [], onChange }) {
   container.classList.add("field", "picker");
   container.innerHTML = `
     <span>${esc(label)}</span>
@@ -286,6 +294,7 @@ function createPicker(container, { label, allLabel, groups, groupPrefix = "", se
     <div class="picker-pop" hidden>
       <div class="picker-tools">
         ${searchable ? `<input type="search" class="picker-search" placeholder="Find…" aria-label="Find ${esc(label)}">` : ""}
+        ${max ? `<span class="picker-note">Up to ${max}</span>` : ""}
         <button type="button" class="btn small" data-picker-clear>Clear</button>
       </div>
       <div class="picker-list">
@@ -323,6 +332,10 @@ function createPicker(container, { label, allLabel, groups, groupPrefix = "", se
       toggle.checked = n === mine.length;
       toggle.indeterminate = n > 0 && n < mine.length;
     });
+    if (max) {
+      const n = boxes.filter((b) => b.checked).length;
+      boxes.forEach((b) => (b.disabled = !b.checked && n >= max));
+    }
     const v = get();
     $(".picker-summary", container).textContent = !v.length
       ? allLabel
@@ -488,7 +501,7 @@ function filteredMovies() {
   const q = normalize(f.q.trim());
   const from = f.from ? Number(f.from) : null;
   const to = f.to ? Number(f.to) : null;
-  const friendMap = f.friend ? state.friendMovies.get(f.friend) || new Map() : null;
+  const friendMaps = f.friends.map((uid) => state.friendMovies.get(uid) || new Map());
 
   const list = state.movies.filter((m) => {
     if (q && !m._search.includes(q)) return false;
@@ -505,12 +518,12 @@ function filteredMovies() {
       const iSaw = hasSeen(state.mine, m.id);
       if (f.status === "seen" && !iSaw) return false;
       if (f.status === "unseen" && iSaw) return false;
-      if (friendMap) {
-        const theySaw = hasSeen(friendMap, m.id);
-        if (f.overlap === "both" && !(iSaw && theySaw)) return false;
-        if (f.overlap === "neither" && (iSaw || theySaw)) return false;
-        if (f.overlap === "friend-only" && !(theySaw && !iSaw)) return false;
-        if (f.overlap === "me-only" && !(iSaw && !theySaw)) return false;
+      if (friendMaps.length) {
+        const seenBy = friendMaps.filter((fm) => hasSeen(fm, m.id)).length;
+        if (f.overlap === "neither" && (iSaw || seenBy)) return false; // none of us
+        if (f.overlap === "both" && !(iSaw && seenBy === friendMaps.length)) return false; // all of us
+        if (f.overlap === "friend-only" && !(seenBy && !iSaw)) return false; // one of them, not me
+        if (f.overlap === "me-only" && !(iSaw && !seenBy)) return false; // me, none of them
       }
     }
     return true;
@@ -519,6 +532,10 @@ function filteredMovies() {
   const byTitle = (a, b) => a.t.localeCompare(b.t);
   const byYearDesc = (a, b) => b.ay - a.ay || byTitle(a, b);
   const rating = (map, id) => entryOf(map, id)?.rating || 0;
+  const friendsAvg = (id) => {
+    const rs = friendMaps.map((fm) => rating(fm, id)).filter(Boolean);
+    return rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : 0;
+  };
   const topCat = (m) => Math.min(...relevantNoms(m).map((n) => state.catIndex.get(n.c) + (n.w ? 0 : 0.5)));
 
   const sorters = {
@@ -532,7 +549,7 @@ function filteredMovies() {
     genre: (a, b) => (a.g[0] || "~").localeCompare(b.g[0] || "~") || byTitle(a, b),
     runtime: (a, b) => (a.rt || 9999) - (b.rt || 9999) || byTitle(a, b),
     "my-rating": (a, b) => rating(state.mine, b.id) - rating(state.mine, a.id) || byYearDesc(a, b),
-    "friend-rating": (a, b) => rating(friendMap, b.id) - rating(friendMap, a.id) || byYearDesc(a, b),
+    "friend-rating": (a, b) => friendsAvg(b.id) - friendsAvg(a.id) || byYearDesc(a, b),
   };
   return list.sort(sorters[f.sort] || byYearDesc);
 }
@@ -669,58 +686,93 @@ function renderStatusFilter() {
   field.hidden = !state.user;
   const sort = $("#filters").elements.sort;
   sort.querySelector('[data-needs="user"]').hidden = !state.user;
-  sort.querySelector('[data-needs="friend"]').hidden = !state.filters.friend;
+  sort.querySelector('[data-needs="friend"]').hidden = !state.filters.friends.length;
+}
+
+function overlapOptions(n) {
+  const one = n <= 1;
+  return [
+    ["any", "Everything"],
+    ["neither", one ? "Neither of us has seen (pick one together!)" : "None of us has seen (pick one together!)"],
+    ["both", one ? "We've both seen" : "We've all seen"],
+    ["friend-only", one ? "They've seen, I haven't" : "At least one of them has seen, I haven't"],
+    ["me-only", one ? "I've seen, they haven't" : "I've seen, none of them have"],
+  ].map(([v, label]) => `<option value="${v}">${label}</option>`).join("");
 }
 
 function renderCompareBox() {
   const box = $("#compare-box");
   if (!box) return;
-  if (state.filters.friend && !state.friends.includes(state.filters.friend)) {
-    state.filters.friend = "";
-    state.filters.overlap = "any";
+  const f = state.filters;
+  const valid = f.friends.filter((uid) => state.friends.includes(uid));
+  if (valid.length !== f.friends.length) {
+    f.friends = valid;
+    if (!valid.length) f.overlap = "any";
   }
   if (!state.user || !state.friends.length) {
     box.hidden = true;
     box.dataset.key = "";
     return;
   }
-  const f = state.filters;
   // Skip re-rendering (which would close an open dropdown) if nothing changed.
-  const key = JSON.stringify([state.friends.map(friendName), state.friends, f.friend, f.overlap]);
+  const key = JSON.stringify([state.friends.map(friendName), state.friends, f.friends, f.overlap]);
   if (box.dataset.key === key && !box.hidden) return;
   box.dataset.key = key;
   box.hidden = false;
   box.innerHTML = `
-    <label class="field">Compare with a friend
-      <select name="friend">
-        <option value="">— No one —</option>
-        ${state.friends.map((uid) => `<option value="${esc(uid)}">${esc(friendName(uid))}</option>`).join("")}
-      </select>
-    </label>
+    <div id="pick-friends"></div>
     <label class="field">Show films
-      <select name="overlap" ${f.friend ? "" : "disabled"}>
-        <option value="any">Everything</option>
-        <option value="neither">Neither of us has seen (pick one together!)</option>
-        <option value="both">We've both seen</option>
-        <option value="friend-only">They've seen, I haven't</option>
-        <option value="me-only">I've seen, they haven't</option>
-      </select>
+      <select name="overlap" ${f.friends.length ? "" : "disabled"}>${overlapOptions(f.friends.length)}</select>
     </label>
-    <p class="hint">Pick a friend to see their ratings on each film and find something new to watch together.</p>`;
-  box.querySelector('[name="friend"]').value = f.friend;
+    <p class="hint" id="compare-status">Choose up to ${MAX_COMPARE} friends to see their ratings on each film and find something new to watch together.</p>`;
   box.querySelector('[name="overlap"]').value = f.overlap;
-  box.querySelector('[name="friend"]').addEventListener("change", (e) => {
-    box.querySelector('[name="overlap"]').disabled = !e.target.value;
-    if (!e.target.value) {
-      state.filters.overlap = "any";
-      box.querySelector('[name="overlap"]').value = "any";
-      if (state.filters.sort === "friend-rating") {
+  createPicker($("#pick-friends"), {
+    label: "Compare with friends",
+    allLabel: "No one",
+    max: MAX_COMPARE,
+    groups: [{ options: state.friends.map((uid) => ({ value: uid, label: friendName(uid) })) }],
+    values: f.friends,
+    onChange: async (values) => {
+      state.filters.friends = values;
+      const overlap = box.querySelector('[name="overlap"]');
+      overlap.disabled = !values.length;
+      overlap.innerHTML = overlapOptions(values.length);
+      if (!values.length) state.filters.overlap = "any";
+      overlap.value = state.filters.overlap;
+      if (!values.length && state.filters.sort === "friend-rating") {
         state.filters.sort = "year-desc";
         $("#filters").elements.sort.value = "year-desc";
       }
-    }
-    renderStatusFilter();
+      box.dataset.key = JSON.stringify([state.friends.map(friendName), state.friends, state.filters.friends, state.filters.overlap]);
+      renderStatusFilter();
+      await ensureFriendData(values);
+      state.shown = pageSize();
+      renderList();
+    },
   });
+}
+
+// Load (once, then cached for FRIEND_DATA_TTL) the seen lists of the given friends.
+const friendLoads = new Map(); // uid -> in-flight promise
+async function ensureFriendData(uids) {
+  const stale = uids.filter((uid) => !state.friendMovies.has(uid) || Date.now() - (state.friendLoadedAt.get(uid) || 0) > FRIEND_DATA_TTL);
+  if (!stale.length) return;
+  const status = $("#compare-status");
+  if (status) status.textContent = `Loading ${stale.map(friendName).join(", ")}'s films…`;
+  const results = await Promise.allSettled(stale.map((uid) => {
+    if (!friendLoads.has(uid)) {
+      friendLoads.set(uid, fb.getUserMovies(uid)
+        .then((map) => {
+          state.friendMovies.set(uid, map);
+          state.friendLoadedAt.set(uid, Date.now());
+        })
+        .finally(() => friendLoads.delete(uid)));
+    }
+    return friendLoads.get(uid);
+  }));
+  const failed = stale.filter((_, i) => results[i].status === "rejected");
+  if (failed.length) toast(`Couldn't load ${failed.map(friendName).join(", ")}'s films. Try again in a moment.`);
+  if (status) status.textContent = `Comparing with ${plural(state.filters.friends.length, "friend")} (up to ${MAX_COMPARE}).`;
 }
 
 let currentList = [];
@@ -823,16 +875,21 @@ function movieCard(m) {
     </article>`;
 }
 
-// My rating, plus the compared friend's seen status and rating.
-function ratingMarks(m, mine) {
+// My rating, plus each compared friend's seen status and rating. Compact rows show a count.
+function ratingMarks(m, mine, compact = false) {
   let html = "";
   if (state.user && mine?.rating) html += `<span>${stars(mine.rating)}</span>`;
-  if (state.filters.friend) {
-    const theirs = entryOf(state.friendMovies.get(state.filters.friend), m.id);
-    const name = esc(friendName(state.filters.friend));
-    html += theirs?.seen
-      ? `<span class="friend-mark seen">✓ ${name}${theirs.rating ? " " + stars(theirs.rating) : ""}</span>`
-      : `<span class="friend-mark">${name} hasn't seen</span>`;
+  const selected = state.filters.friends;
+  if (!selected.length) return html;
+  const takes = selected.map((uid) => ({ uid, entry: entryOf(state.friendMovies.get(uid), m.id) }));
+  const seen = takes.filter((t) => t.entry?.seen);
+  const mark = ({ uid, entry }) =>
+    `<span class="friend-mark seen">✓ ${esc(friendName(uid))}${entry.rating ? " " + stars(entry.rating) : ""}</span>`;
+  if (selected.length === 1) {
+    html += seen.length ? mark(seen[0]) : `<span class="friend-mark">${esc(friendName(selected[0]))} hasn't seen</span>`;
+  } else {
+    if (!compact) html += seen.map(mark).join("");
+    html += `<span class="friend-mark ${compact && seen.length ? "seen" : ""}">${seen.length}/${selected.length} friends seen</span>`;
   }
   return html;
 }
@@ -903,7 +960,7 @@ function movieRow(m, showYear) {
       <span class="row-noms">${plural(m.n.length, "nom")}</span>
       <span class="row-wins ${m.wins ? "" : "none"}" title="Total wins, all categories">${plural(m.wins, "win")}</span>
       <span class="row-detail">${esc(detail)}</span>
-      <span class="row-side">${ratingMarks(m, mine)}</span>
+      <span class="row-side">${ratingMarks(m, mine, true)}</span>
     </div>`;
 }
 
@@ -1020,10 +1077,6 @@ function openMovie(id) {
       </tr>`;
   }
 
-  const friendTakes = state.friends
-    .map((uid) => ({ uid, entry: entryOf(state.friendMovies.get(uid), id) }))
-    .filter((x) => x.entry?.seen);
-
   const meta = [m.y, m.g.join(", "), m.rt ? `${m.rt} min` : ""].filter(Boolean).join(" · ");
 
   showModal(`
@@ -1042,20 +1095,14 @@ function openMovie(id) {
         <button class="close-btn" data-close aria-label="Close">✕</button>
       </div>
 
+      <section class="synopsis-box">
+        <p class="synopsis muted" id="synopsis">Loading synopsis…</p>
+        <p class="synopsis-credit">Synopsis: TMDB</p>
+      </section>
+
       <section id="my-entry"></section>
 
-      ${state.user && state.friends.length ? `
-      <section>
-        <h3 class="section-title">Friends who've seen it</h3>
-        ${friendTakes.length ? friendTakes.map(({ uid, entry }) => `
-          <div class="friend-review">
-            ${avatar(state.friendProfiles.get(uid))}
-            <div>
-              <strong>${esc(friendName(uid))}</strong> ${stars(entry.rating)}
-              ${entry.review ? `<p>${esc(entry.review)}</p>` : ""}
-            </div>
-          </div>`).join("") : `<p class="muted" style="margin:0">None of your friends have marked this one yet.</p>`}
-      </section>` : ""}
+      ${state.user && state.friends.length ? `<section id="friend-takes">${friendTakesHtml(m)}</section>` : ""}
 
       <section>
         <h3 class="section-title">Academy Award nominations</h3>
@@ -1064,7 +1111,75 @@ function openMovie(id) {
     </div>`);
 
   renderMyEntry(m);
+  showSynopsis(m.id);
 }
+
+// Synopses live in data/synopses/NN.json (by the IMDb id's last two digits, ~14 KB each),
+// fetched only when a film is opened and kept for the rest of the visit.
+const synopsisFiles = new Map();
+function loadSynopsis(id) {
+  const key = id.slice(-2);
+  if (!synopsisFiles.has(key)) {
+    synopsisFiles.set(key, fetchJson(`data/synopses/${key}.json`).catch((err) => {
+      synopsisFiles.delete(key); // allow a retry next time
+      throw err;
+    }));
+  }
+  return synopsisFiles.get(key).then((file) => file[id] || null);
+}
+
+function showSynopsis(id) {
+  const box = $("#synopsis", modalBody);
+  const done = (text, found) => {
+    if (!box.isConnected) return; // another film was opened meanwhile
+    box.textContent = text;
+    box.classList.toggle("muted", !found);
+    box.nextElementSibling.hidden = !found;
+  };
+  loadSynopsis(id)
+    .then((text) => done(text || "No synopsis available for this film.", Boolean(text)))
+    .catch(() => done("The synopsis couldn't be loaded right now.", false));
+}
+
+// Friends' takes on one film. Uses lists already loaded (compared friends, profiles
+// visited); the rest are looked up only when asked, one read per friend.
+function friendTake(uid, movieId) {
+  if (state.friendMovies.has(uid)) return { known: true, entry: entryOf(state.friendMovies.get(uid), movieId) };
+  const key = `${uid}/${movieId}`;
+  return state.friendEntries.has(key) ? { known: true, entry: state.friendEntries.get(key) } : { known: false };
+}
+
+function friendTakesHtml(m) {
+  const takes = state.friends.map((uid) => ({ uid, ...friendTake(uid, m.id) }));
+  const seen = takes.filter((t) => t.known && t.entry?.seen);
+  const unknown = takes.filter((t) => !t.known);
+  const empty = unknown.length ? "None of the friends checked so far have marked this one." : "None of your friends have marked this one yet.";
+  return `
+    <h3 class="section-title">Friends who've seen it</h3>
+    ${seen.length ? seen.map(({ uid, entry }) => `
+      <div class="friend-review">
+        ${avatar(state.friendProfiles.get(uid))}
+        <div>
+          <strong>${esc(friendName(uid))}</strong> ${stars(entry.rating)}
+          ${entry.review ? `<p>${esc(entry.review)}</p>` : ""}
+        </div>
+      </div>`).join("") : `<p class="muted" style="margin:0">${empty}</p>`}
+    ${unknown.length ? `<button class="btn small" data-check-friends="${m.id}" style="margin-top:8px">Check ${plural(unknown.length, "other friend")}</button>` : ""}`;
+}
+
+modalBody.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-check-friends]");
+  if (!btn) return;
+  const m = state.byId.get(btn.dataset.checkFriends);
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  const unknown = state.friends.filter((uid) => !friendTake(uid, m.id).known);
+  await Promise.allSettled(unknown.map(async (uid) => {
+    state.friendEntries.set(`${uid}/${m.id}`, await fb.getMovieEntry(uid, m.id));
+  }));
+  const section = $("#friend-takes", modalBody);
+  if (section) section.innerHTML = friendTakesHtml(m);
+});
 
 function renderMyEntry(m) {
   const box = $("#my-entry", modalBody);
@@ -1350,14 +1465,15 @@ async function renderFriendSections() {
     <h2>Your friends (${state.friends.length})</h2>
     ${state.friends.length ? "" : `<p class="muted">No friends yet. Add someone by email above.</p>`}
     ${state.friends.map((uid) => {
-      const theirs = state.friendMovies.get(uid);
+      const theirs = state.friendMovies.get(uid); // only loaded once compared or viewed
       const seenCount = theirs ? [...theirs.values()].filter((e) => e.seen).length : 0;
       const both = theirs ? [...theirs].filter(([id, e]) => e.seen && hasSeen(state.mine, id)).length : 0;
+      const stats = theirs ? `${plural(seenCount, "film")} seen · ${both.toLocaleString()} in common with you` : "View or compare to see their films";
       return `
       <div class="person">${avatar(state.friendProfiles.get(uid))}
         <div class="info">
           <div class="name">${esc(friendName(uid))}</div>
-          <div class="muted">${plural(seenCount, "film")} seen · ${both.toLocaleString()} in common with you</div>
+          <div class="muted">${stats}</div>
         </div>
         <div class="actions">
           <a class="btn small" href="#/user/${esc(uid)}">View</a>
@@ -1424,7 +1540,8 @@ view.addEventListener("click", async (e) => {
 
 function pickTogether(uid) {
   // Start from the user's defaults (e.g. Best Picture only), minus a seen/unseen filter.
-  state.filters = { ...baseFilters(), status: "all", friend: uid, overlap: "neither" };
+  state.filters = { ...baseFilters(), status: "all", friends: [uid], overlap: "neither" };
+  ensureFriendData([uid]).then(() => currentRoute().name === "browse" && renderList());
   state.shown = pageSize();
   location.hash = "#/browse";
 }
@@ -1526,7 +1643,15 @@ function renderUser(uid) {
     return;
   }
   const profile = state.friendProfiles.get(uid);
-  const theirs = state.friendMovies.get(uid) || new Map();
+  const theirs = state.friendMovies.get(uid);
+  if (!theirs) {
+    view.innerHTML = `<p class="loading">Loading ${esc(friendName(uid))}'s films…</p>`;
+    ensureFriendData([uid]).then(() => {
+      const r = currentRoute();
+      if (r.name === "user" && r.arg === uid) renderUser(uid);
+    });
+    return;
+  }
   view.innerHTML = `
     <div class="profile-head">
       ${avatar(profile, "lg")}
@@ -1632,42 +1757,24 @@ function renderSettings() {
 function stopUserSubs() {
   subs.user.forEach((unsub) => unsub());
   subs.user = [];
-  subs.friendMovies.forEach((unsub) => unsub());
-  subs.friendMovies.clear();
 }
 
-function syncFriendSubscriptions(uids) {
-  for (const [uid, unsub] of subs.friendMovies) {
+// Friends' profiles (names, photos) load right away; their film lists only when needed.
+function syncFriends(uids) {
+  for (const uid of [...state.friendProfiles.keys(), ...state.friendMovies.keys()]) {
     if (!uids.includes(uid)) {
-      unsub();
-      subs.friendMovies.delete(uid);
-      state.friendMovies.delete(uid);
       state.friendProfiles.delete(uid);
+      state.friendMovies.delete(uid);
+      state.friendLoadedAt.delete(uid);
     }
   }
   for (const uid of uids) {
-    if (subs.friendMovies.has(uid)) continue;
+    if (state.friendProfiles.has(uid)) continue;
     profileFor(uid).then((p) => {
       if (!state.friends.includes(uid)) return;
       state.friendProfiles.set(uid, p);
       refresh();
     });
-    subs.friendMovies.set(
-      uid,
-      fb.watchUserMovies(
-        uid,
-        (map) => {
-          state.friendMovies.set(uid, map);
-          refresh();
-        },
-        (err) => {
-          // Usually a permissions race right after becoming friends: retry shortly.
-          console.warn("Friend data unavailable", uid, err.code);
-          subs.friendMovies.delete(uid);
-          setTimeout(() => state.friends.includes(uid) && syncFriendSubscriptions(state.friends), 3000);
-        },
-      ),
-    );
   }
 }
 
@@ -1677,6 +1784,8 @@ function onUser(user) {
   state.mine = new Map();
   state.friends = [];
   state.friendMovies.clear();
+  state.friendLoadedAt.clear();
+  state.friendEntries.clear();
   state.friendProfiles.clear();
   state.incoming = [];
   state.outgoing = [];
@@ -1708,7 +1817,7 @@ function onUser(user) {
       }, (err) => console.error(err)),
       fb.watchFriends(user.uid, (uids) => {
         state.friends = uids;
-        syncFriendSubscriptions(uids);
+        syncFriends(uids);
         refresh();
       }),
       fb.watchOutgoingRequests(user.uid, (list) => {

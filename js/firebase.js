@@ -120,6 +120,21 @@ export function watchUserMovies(uid, callback, onError) {
   );
 }
 
+// One-time read of a friend's seen list (one read per film they've marked). Used only for
+// friends being compared or whose profile is open; never streamed for every friend.
+export async function getUserMovies(uid) {
+  const snap = await F.getDocs(col("users", uid, "movies"));
+  const map = new Map();
+  snap.forEach((d) => map.set(d.id, d.data()));
+  return map;
+}
+
+// A friend's take on a single film (one read), for the details dialog.
+export async function getMovieEntry(uid, movieId) {
+  const snap = await F.getDoc(ref("users", uid, "movies", movieId));
+  return snap.exists() ? snap.data() : null;
+}
+
 // Saves {seen, rating, review}; removes the doc when nothing is left to track.
 export function saveMovieEntry(uid, movieId, entry) {
   const docRef = ref("users", uid, "movies", movieId);

@@ -20,7 +20,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fetch_posters import apply_posters, load_posters  # cached TMDB posters (no key needed)
+from fetch_tmdb import apply_posters, load_posters  # cached TMDB posters (no key needed)
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = Path(__file__).resolve().parent / ".cache"

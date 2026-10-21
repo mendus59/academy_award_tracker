@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wiki_awards  # noqa: E402
 from build_movies import IMDB_URL, OSCARS_URL, fetch  # noqa: E402
-from fetch_posters import load_dotenv  # noqa: E402
+from fetch_tmdb import load_dotenv  # noqa: E402
 from resolve_ids import resolve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -111,7 +111,7 @@ def publish(args, message: str) -> bool:
     if not args.publish:
         log(f"[dry run] would publish: {message}")
         return False
-    paths = [p for p in ("data", "scripts/live", "scripts/posters.json") if (ROOT / p).exists()]
+    paths = [p for p in ("data", "scripts/live", "scripts/posters.json", "scripts/synopses.json") if (ROOT / p).exists()]
     run(["git", "add", *paths], check=False)
     if run(["git", "diff", "--cached", "--quiet"], check=False).returncode == 0:
         log("No data changes to publish.")
@@ -285,7 +285,7 @@ def rebuild(refresh: bool) -> None:
     if result.returncode != 0:
         raise RuntimeError("build_movies.py failed")
     if os.environ.get("TMDB_READ_ACCESS_TOKEN") or os.environ.get("TMDB_API_KEY"):
-        posters = run([sys.executable, "scripts/fetch_posters.py"], check=False)
+        posters = run([sys.executable, "scripts/fetch_tmdb.py"], check=False)
         log(posters.stderr.strip().splitlines()[-1] if posters.stderr.strip() else "")
 
 

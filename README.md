@@ -22,7 +22,8 @@ js/firebase.js          Firebase Auth + Firestore calls
 js/firebase-config.js   ← your Firebase project settings go here
 data/movies.json        Generated film and nomination data
 scripts/build_movies.py Regenerates data/movies.json
-scripts/fetch_posters.py Adds TMDB poster paths (cached in scripts/posters.json)
+scripts/fetch_tmdb.py   Adds TMDB posters + synopses (cached in scripts/posters.json, scripts/synopses.json)
+data/synopses/          Film synopses, split into 100 small files loaded on demand
 scripts/automation.py   Yearly jobs: dates, nominations, live winners (with wiki_awards.py, resolve_ids.py)
 scripts/live/           Nominations/winners scraped by the automation
 data/schedule.json      Upcoming dates + automation progress (also drives the banner)
@@ -132,11 +133,11 @@ Three GitHub Actions workflows keep the site current each awards season with no 
 - To re-run a step that already finished, clear `nominationsCaptured` or `winnersComplete` for that ceremony.
 - Locally, `python scripts/automation.py dates|nominations|winners` writes files without committing. Add `--now 2027-01-21T14:00Z` to pretend it's another time, and `--force --edition 99` to skip the time checks.
 
-## Movie posters (TMDB)
+## Posters and synopses (TMDB)
 
-Cards and the film details dialog show posters from [TMDB](https://www.themoviedb.org/). Films without one get a lettered placeholder.
+Cards and the film details dialog show posters from [TMDB](https://www.themoviedb.org/); films without one get a lettered placeholder. Clicking a film also shows its synopsis (TMDB's overview). Synopses are stored in `data/synopses/00.json` to `99.json`, grouped by the last two digits of the IMDb id (about 14 KB each). The site downloads only the one file it needs when you open a film, so the initial page load stays the same size.
 
-To fetch posters (needed once, then again for new films after each ceremony):
+To fetch posters and synopses (needed once; the yearly automation then handles new nominees):
 
 1. Create a free TMDB account. Under **Settings → API**, request an API key (choose "Personal"/non-commercial use).
 2. Copy the **API Read Access Token** (the long one) into the `.env` file at the repo root. If it doesn't exist, copy `.env.example` to `.env` first:
@@ -149,15 +150,38 @@ To fetch posters (needed once, then again for new films after each ceremony):
 3. Run:
 
    ```bash
-   python scripts/fetch_posters.py
+   python scripts/fetch_tmdb.py
    ```
 
-   This looks up every film by IMDb ID (a few minutes for about 5,300 films) and saves the results to `scripts/posters.json`. It also writes the poster paths into `data/movies.json`.
-4. Commit `scripts/posters.json` and `data/movies.json`.
+   This looks up every film by IMDb ID (a few minutes for about 5,300 films) and caches the results in `scripts/posters.json` and `scripts/synopses.json`. It also writes the poster paths into `data/movies.json` and the synopsis files into `data/synopses/`.
+4. Commit `scripts/posters.json`, `scripts/synopses.json`, `data/movies.json` and `data/synopses/`.
 
-Later runs only look up films that aren't in the cache. Add `--retry-missing` to re-check films that had no poster. `build_movies.py` re-applies cached posters automatically, so rebuilding the data doesn't need the token.
+Later runs only look up films that aren't in the cache. Add `--retry-missing` to re-check films that had no poster or synopsis. `build_movies.py` re-applies cached posters automatically, so rebuilding the data doesn't need the token.
 
 Never commit `.env`. Only poster paths are stored; images load directly from TMDB's image server. TMDB's terms require attribution, which is in the site footer ("This product uses the TMDB API but is not endorsed or certified by TMDB"). Their [logo guidelines](https://www.themoviedb.org/about/logos-attribution) also ask for one of the TMDB logos; download one there and add it next to the footer credit. TMDB is free for non-commercial use; a commercial app needs a commercial agreement with TMDB.
+
+## Comparing with friends (and why it's capped at 5)
+
+On Browse, **Compare with friends** lets you pick up to **5** friends. Each card then shows which of them have seen the film, with their ratings. The **Show films** filter switches to group wording: none of us has seen it, we've all seen it, at least one of them has but I haven't, I've seen it but none of them have. There's also a **Friends' rating** sort, using the average of the selected friends' ratings.
+
+**What it costs.** A friend's seen list is one Firestore document per film they've marked. Loading it costs one read per document, at least a few dozen and at most 5,264 (every film). Firebase's free tier is **50,000 reads per day for the whole project**, shared by all users.
+
+| Friends compared | Typical lists (~300 films each) | Heavy users (~1,500 each) | Theoretical maximum (5,264 each) |
+|---|---|---|---|
+| 1 | 300 reads | 1,500 | 5,264 |
+| 5 (the cap) | 1,500 | 7,500 | 26,320 |
+| 20 | 6,000 | 30,000 | 105,280 |
+
+- **Reads are the real limit.** Filtering in the browser is cheap: even 20 friends across 5,264 films is about 100,000 in-memory lookups, which takes milliseconds.
+- **Readability matters too.** Each compared friend adds a mark to every card, and beyond about five the cards become hard to read.
+- **Five keeps both in check.** A typical comparison stays near 1,500 reads, and even five heavy users fit within one day's free tier.
+
+**How reads are kept low:**
+- **Load on demand:** friends' lists are never loaded just by opening the site. A list loads only when you select that friend to compare, or open their profile. It's read once, not streamed, and reused for 10 minutes.
+- **Single-film lookups:** in a film's details, takes from friends already loaded appear immediately. A **Check N other friends** button looks up the rest for that one film only, at one read per friend.
+- **Friends page:** the "N films seen · N in common" stats appear for friends whose list is already loaded.
+
+The cap is set by `MAX_COMPARE` in [`js/app.js`](js/app.js). Firestore rules can't limit how many friends' lists a client reads, but they still ensure people only ever read lists of accounts that have accepted them as friends.
 
 ## Firestore data model
 
