@@ -1,12 +1,11 @@
 // Thin wrapper around Firebase Auth + Firestore.
 //
 // Firestore layout:
-//   profiles/{uid}                    { displayName, nameLower, photoURL, updatedAt }   public to signed-in users
-//   emailIndex/{emailLower}           { uid }                     lookup-by-email only (no listing)
+//   profiles/{uid}                    { displayName, nameLower, photoURL, updatedAt }   readable by id (not listable)
 //   users/{uid}/movies/{imdbId}       { seen, rating, review, updatedAt }               owner + friends can read
 //   users/{uid}/friends/{friendUid}   { since }
 //   users/{uid}/settings/prefs        { filters, layout, updatedAt }                     owner only
-//   friendRequests/{fromUid}_{toUid}  { from, to, createdAt }
+//   friendRequests/{fromUid}_{toEmail} { from, fromEmail, toEmail, createdAt }          sender + owner of toEmail
 
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -60,6 +59,8 @@ export async function signUpEmail(displayName, email, password) {
     const cred = await A.createUserWithEmailAndPassword(auth, email, password);
     await A.updateProfile(cred.user, { displayName });
     await ensureProfile(cred.user, true);
+    // Friend requests are addressed by email, so the address has to be proven first.
+    await A.sendEmailVerification(cred.user).catch((err) => console.warn("Verification email failed", err));
     return cred;
   })();
   try {
@@ -69,25 +70,33 @@ export async function signUpEmail(displayName, email, password) {
   }
 }
 
+export const resendVerification = () => A.sendEmailVerification(auth.currentUser);
+
+// After the user clicks the verification link, reload their account and refresh the ID
+// token so Firestore sees email_verified = true. Returns the refreshed user.
+export async function refreshUser() {
+  await auth.currentUser.reload();
+  await auth.currentUser.getIdToken(true);
+  return auth.currentUser;
+}
+
 async function ensureProfile(user, force = false) {
   const profileRef = ref("profiles", user.uid);
   const existing = await F.getDoc(profileRef);
   if (!existing.exists() || force) {
     const displayName = (user.displayName || user.email?.split("@")[0] || "Movie fan").slice(0, 40);
-    await saveProfile(user.uid, { displayName, photoURL: user.photoURL || "" });
-  }
-  if (user.email) {
-    const key = user.email.toLowerCase();
-    const idx = await F.getDoc(ref("emailIndex", key)).catch(() => null);
-    if (!idx?.exists()) await F.setDoc(ref("emailIndex", key), { uid: user.uid });
+    await saveProfile(user.uid, { displayName, photoURL: safePhoto(user.photoURL) });
   }
 }
+
+// Profile photos are limited to Google's image servers (see firestore.rules).
+const safePhoto = (url) => (/^https:\/\/[a-z0-9-]+\.googleusercontent\.com\//.test(url || "") ? url : "");
 
 export function saveProfile(uid, { displayName, photoURL }) {
   const name = displayName.trim().slice(0, 40);
   return F.setDoc(
     ref("profiles", uid),
-    { displayName: name, nameLower: name.toLowerCase(), photoURL: photoURL ?? "", updatedAt: F.serverTimestamp() },
+    { displayName: name, nameLower: name.toLowerCase(), photoURL: safePhoto(photoURL), updatedAt: F.serverTimestamp() },
     { merge: true },
   );
 }
@@ -136,45 +145,41 @@ export function saveSettings(uid, { filters, layout }) {
 
 // ---------- Friends ----------
 
-export async function findUsers(term, myUid) {
-  const q = term.trim().toLowerCase();
-  if (!q) return [];
-  if (q.includes("@")) {
-    const idx = await F.getDoc(ref("emailIndex", q));
-    if (!idx.exists() || idx.data().uid === myUid) return [];
-    return [await getProfile(idx.data().uid)];
-  }
-  const snap = await F.getDocs(
-    F.query(col("profiles"), F.orderBy("nameLower"), F.startAt(q), F.endAt(q + ""), F.limit(10)),
-  );
-  return snapList(snap).filter((p) => p.id !== myUid);
-}
+export const normalizeEmail = (email) => (email || "").trim().toLowerCase();
 
-export async function sendFriendRequest(myUid, theirUid) {
-  // If they already asked us, accepting is the friendly thing to do.
-  const reverse = await F.getDoc(ref("friendRequests", `${theirUid}_${myUid}`));
-  if (reverse.exists()) return acceptFriendRequest({ from: theirUid, to: myUid });
-  return F.setDoc(ref("friendRequests", `${myUid}_${theirUid}`), {
-    from: myUid,
-    to: theirUid,
+// Sends a request to an email address without checking whether anyone uses it, so the
+// app never reveals which emails have accounts. Only that email's owner can see it.
+export function sendFriendRequest(user, toEmail) {
+  const to = normalizeEmail(toEmail);
+  return F.setDoc(ref("friendRequests", `${user.uid}_${to}`), {
+    from: user.uid,
+    fromEmail: normalizeEmail(user.email),
+    toEmail: to,
     createdAt: F.serverTimestamp(),
   });
 }
 
-export function watchFriendRequests(uid, field, callback) {
-  return F.onSnapshot(F.query(col("friendRequests"), F.where(field, "==", uid)), (snap) => callback(snapList(snap)));
-}
+// Requests I've sent (from my uid) or received (to my verified email).
+export const watchOutgoingRequests = (uid, callback) =>
+  F.onSnapshot(F.query(col("friendRequests"), F.where("from", "==", uid)), (snap) => callback(snapList(snap)));
+export const watchIncomingRequests = (email, callback, onError) =>
+  F.onSnapshot(
+    F.query(col("friendRequests"), F.where("toEmail", "==", normalizeEmail(email))),
+    (snap) => callback(snapList(snap)),
+    onError,
+  );
 
-export function acceptFriendRequest({ from, to }) {
+// Accepting creates the friendship on both sides and removes the request in one batch.
+export function acceptFriendRequest(request, myUid) {
   const batch = F.writeBatch(db);
   const since = F.serverTimestamp();
-  batch.set(ref("users", to, "friends", from), { since });
-  batch.set(ref("users", from, "friends", to), { since });
-  batch.delete(ref("friendRequests", `${from}_${to}`));
+  batch.set(ref("users", myUid, "friends", request.from), { since });
+  batch.set(ref("users", request.from, "friends", myUid), { since });
+  batch.delete(ref("friendRequests", request.id));
   return batch.commit();
 }
 
-export const deleteFriendRequest = ({ from, to }) => F.deleteDoc(ref("friendRequests", `${from}_${to}`));
+export const deleteFriendRequest = (requestId) => F.deleteDoc(ref("friendRequests", requestId));
 
 export function removeFriend(myUid, theirUid) {
   const batch = F.writeBatch(db);

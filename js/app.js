@@ -591,7 +591,13 @@ function renderAccount() {
     return;
   }
   const name = state.profile?.displayName || state.user.displayName || "Me";
+  const count = state.incoming.length;
+  const bell = count
+    ? `<a href="#/friends" class="bell" title="${plural(count, "friend request")}" aria-label="${plural(count, "pending friend request")}">
+        <span aria-hidden="true">🔔</span><span class="badge">${count}</span></a>`
+    : "";
   el.innerHTML = `
+    ${bell}
     <a href="#/me" title="${esc(name)}">${avatar({ displayName: name, photoURL: state.profile?.photoURL })}</a>    <button class="btn small" data-action="sign-out">Sign out</button>`;
 }
 
@@ -1214,57 +1220,85 @@ function renderFriends() {
     view.innerHTML = signedOutPage("Friends", "Sign in to add friends, see what they've watched, and find a film to watch together.");
     return;
   }
+  const verified = canUseRequests();
   view.innerHTML = `
     <div class="page-head"><div><h1>Friends</h1>
       <p class="muted">Friends can see which films you've seen, plus your ratings and reviews.</p></div></div>
+    ${verified ? "" : `
+    <section class="panel verify-panel">
+      <h2>Verify your email</h2>
+      <p>Friend requests are sent by email, so please confirm yours first. We sent a link to
+        <strong>${esc(state.user.email || "your email")}</strong>.</p>
+      <div class="row">
+        <button class="btn primary" data-friend-action="check-verify">I've verified my email</button>
+        <button class="btn" data-friend-action="resend-verify">Resend the link</button>
+      </div>
+    </section>`}
     <div class="grid-2">
       <section class="panel">
         <h2>Add a friend</h2>
-        <form class="search-row" id="friend-search">
-          <input type="search" name="q" placeholder="Display name or exact email" autocomplete="off" required>
-          <button class="btn primary">Search</button>
+        <p class="muted">Enter your friend's email address. If they have an account, they'll see your request.</p>
+        <form class="search-row" id="friend-add" novalidate>
+          <input type="email" name="email" placeholder="friend@example.com" autocomplete="off" aria-label="Friend's email" ${verified ? "" : "disabled"}>
+          <button class="btn primary" ${verified ? "" : "disabled"}>Send request</button>
         </form>
-        <div id="search-results"></div>
+        <p class="form-status" id="add-status" role="status"></p>
       </section>
       <section class="panel" id="requests"></section>
     </div>
     <section class="panel" id="friend-list"></section>`;
 
-  $("#friend-search").onsubmit = async (e) => {
+  $("#friend-add").onsubmit = async (e) => {
     e.preventDefault();
-    const results = $("#search-results");
-    results.innerHTML = `<p class="muted">Searching…</p>`;
+    const input = e.target.elements.email;
+    const btn = e.target.querySelector("button");
+    btn.disabled = true;
     try {
-      const people = await fb.findUsers(e.target.elements.q.value, state.user.uid);
-      renderSearchResults(people);
+      const message = await addFriendByEmail(input.value);
+      if (message.ok) input.value = "";
+      setAddStatus(message.text, message.ok);
     } catch (err) {
       console.error(err);
-      results.innerHTML = `<p class="error">Search failed. Please try again.</p>`;
+      setAddStatus("That didn't work. Please try again.", false);
+    } finally {
+      btn.disabled = false;
     }
   };
   renderFriendSections();
 }
 
-let lastSearch = [];
-function renderSearchResults(people = lastSearch) {
-  lastSearch = people;
-  const el = $("#search-results");
+// Email/password accounts must verify their address before using friend requests.
+const canUseRequests = () => Boolean(state.user?.email && state.user.emailVerified);
+const EMAIL_RE = /^[^@\s/]+@[^@\s/]+\.[^@\s/]+$/;
+
+function setAddStatus(text, ok) {
+  const el = $("#add-status");
   if (!el) return;
-  if (!people.length) {
-    el.innerHTML = `<p class="muted">No one found. Names match from the start (e.g. “Sam” finds “Samantha”); emails must match exactly.</p>`;
-    return;
+  el.textContent = text;
+  el.classList.toggle("error", !ok);
+}
+
+// The reply never says whether the email belongs to an account.
+async function addFriendByEmail(raw) {
+  const email = fb.normalizeEmail(raw);
+  if (!EMAIL_RE.test(email)) return { ok: false, text: "Enter a valid email address." };
+  if (email === fb.normalizeEmail(state.user.email)) return { ok: false, text: "That's your own email address." };
+  if (state.outgoing.some((r) => r.toEmail === email)) {
+    return { ok: false, text: `You already have a pending request to ${email}.` };
   }
-  el.innerHTML = people
-    .map((p) => {
-      let action;
-      if (state.friends.includes(p.id)) action = `<span class="muted">Friends ✓</span>`;
-      else if (state.outgoing.some((r) => r.to === p.id)) action = `<span class="muted">Request sent</span>`;
-      else if (state.incoming.some((r) => r.from === p.id))
-        action = `<button class="btn small primary" data-friend-action="accept" data-uid="${esc(p.id)}">Accept request</button>`;
-      else action = `<button class="btn small primary" data-friend-action="add" data-uid="${esc(p.id)}">Add friend</button>`;
-      return `<div class="person">${avatar(p)}<div class="info"><div class="name">${esc(p.displayName)}</div></div><div class="actions">${action}</div></div>`;
-    })
-    .join("");
+  // They already invited us: accept instead of sending a second request.
+  const theirs = state.incoming.find((r) => r.fromEmail === email);
+  if (theirs) {
+    await acceptRequest(theirs);
+    return { ok: true, text: `${email} had already sent you a request, so you're now friends!` };
+  }
+  await fb.sendFriendRequest(state.user, email);
+  return { ok: true, text: `Request sent to ${email}. If they have an account, they'll see it in their friend requests.` };
+}
+
+async function acceptRequest(req) {
+  if (state.friends.includes(req.from)) await fb.deleteFriendRequest(req.id);
+  else await fb.acceptFriendRequest(req, state.user.uid);
 }
 
 const profileCache = new Map();
@@ -1274,35 +1308,47 @@ async function profileFor(uid) {
   return profileCache.get(uid);
 }
 
+let friendRenderId = 0;
 async function renderFriendSections() {
   if (!$("#requests")) return;
-  renderSearchResults();
 
-  const people = async (list, key) => Promise.all(list.map(async (r) => ({ req: r, profile: await profileFor(r[key]) })));
-  const [incoming, outgoing] = await Promise.all([people(state.incoming, "from"), people(state.outgoing, "to")]);
+  // Snapshots for friends and requests often arrive together; drop a render that was
+  // overtaken while waiting for profiles, so stale requests don't reappear.
+  const renderId = ++friendRenderId;
+  const incoming = await Promise.all(state.incoming.map(async (req) => ({ req, profile: await profileFor(req.from) })));
   const reqEl = $("#requests");
-  if (!reqEl) return;
+  if (!reqEl || renderId !== friendRenderId) return;
+  const none = !incoming.length && !state.outgoing.length;
   reqEl.innerHTML = `
     <h2>Friend requests</h2>
-    ${incoming.length || outgoing.length ? "" : `<p class="muted">No pending requests.</p>`}
+    ${none ? `<p class="muted">No pending requests.</p>` : ""}
     ${incoming.map(({ req, profile }) => `
-      <div class="person">${avatar(profile)}
-        <div class="info"><div class="name">${esc(profile.displayName)}</div><div class="muted">wants to be friends</div></div>
+      <div class="person request">${avatar(profile)}
+        <div class="info">
+          <span class="request-tag">Pending Request</span>
+          <div class="name">${esc(profile.displayName)}</div>
+          <div class="muted">${esc(req.fromEmail || "")} wants to be friends</div>
+        </div>
         <div class="actions">
-          <button class="btn small primary" data-friend-action="accept" data-uid="${esc(req.from)}">Accept</button>
-          <button class="btn small" data-friend-action="decline" data-uid="${esc(req.from)}">Decline</button>
+          <button class="btn small primary" data-friend-action="accept" data-id="${esc(req.id)}">Accept</button>
+          <button class="btn small" data-friend-action="decline" data-id="${esc(req.id)}">Cancel</button>
         </div>
       </div>`).join("")}
-    ${outgoing.map(({ req, profile }) => `
-      <div class="person">${avatar(profile)}
-        <div class="info"><div class="name">${esc(profile.displayName)}</div><div class="muted">request sent</div></div>
-        <div class="actions"><button class="btn small" data-friend-action="cancel" data-uid="${esc(req.to)}">Cancel</button></div>
+    ${state.outgoing.map((req) => `
+      <div class="person request">
+        <span class="avatar" aria-hidden="true">✉</span>
+        <div class="info">
+          <span class="request-tag">Pending Request</span>
+          <div class="name">${esc(req.toEmail || "Unknown email")}</div>
+          <div class="muted">Sent by you</div>
+        </div>
+        <div class="actions"><button class="btn small" data-friend-action="cancel" data-id="${esc(req.id)}">Cancel</button></div>
       </div>`).join("")}`;
 
   const listEl = $("#friend-list");
   listEl.innerHTML = `
     <h2>Your friends (${state.friends.length})</h2>
-    ${state.friends.length ? "" : `<p class="muted">No friends yet. Search for someone above to send a request.</p>`}
+    ${state.friends.length ? "" : `<p class="muted">No friends yet. Add someone by email above.</p>`}
     ${state.friends.map((uid) => {
       const theirs = state.friendMovies.get(uid);
       const seenCount = theirs ? [...theirs.values()].filter((e) => e.seen).length : 0;
@@ -1325,37 +1371,52 @@ async function renderFriendSections() {
 view.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-friend-action]");
   if (!btn || !state.user) return;
-  const uid = btn.dataset.uid;
-  const me = state.user.uid;
+  const { uid, id } = btn.dataset;
   btn.disabled = true;
   try {
     switch (btn.dataset.friendAction) {
-      case "add":
-        await fb.sendFriendRequest(me, uid);
-        toast("Friend request sent");
+      case "accept": {
+        const req = state.incoming.find((r) => r.id === id);
+        if (req) {
+          await acceptRequest(req);
+          toast("You're now friends!");
+        }
         break;
-      case "accept":
-        await fb.acceptFriendRequest({ from: uid, to: me });
-        toast("You're now friends!");
-        break;
+      }
       case "decline":
-        await fb.deleteFriendRequest({ from: uid, to: me });
+        await fb.deleteFriendRequest(id);
+        toast("Request removed");
         break;
       case "cancel":
-        await fb.deleteFriendRequest({ from: me, to: uid });
+        await fb.deleteFriendRequest(id);
+        toast("Request cancelled");
         break;
       case "remove":
         if (!confirm(`Remove ${friendName(uid)} from your friends?`)) break;
-        await fb.removeFriend(me, uid);
+        await fb.removeFriend(state.user.uid, uid);
         toast("Friend removed");
         break;
       case "pick":
         pickTogether(uid);
         return;
+      case "resend-verify":
+        await fb.resendVerification();
+        toast(`Verification link sent to ${state.user.email}`);
+        break;
+      case "check-verify": {
+        const user = await fb.refreshUser();
+        if (user.emailVerified) {
+          toast("Email verified. You can now send and receive friend requests.");
+          onUser(user); // resubscribe with the verified account
+        } else {
+          toast("Not verified yet. Click the link in the email, then try again.");
+        }
+        break;
+      }
     }
   } catch (err) {
     console.error(err);
-    toast("That didn't work — please try again");
+    toast(err.code === "auth/too-many-requests" ? "Please wait a minute before trying again" : "That didn't work. Please try again");
   } finally {
     btn.disabled = false;
   }
@@ -1650,15 +1711,20 @@ function onUser(user) {
         syncFriendSubscriptions(uids);
         refresh();
       }),
-      fb.watchFriendRequests(user.uid, "to", (list) => {
-        state.incoming = list;
-        refresh();
-      }),
-      fb.watchFriendRequests(user.uid, "from", (list) => {
+      fb.watchOutgoingRequests(user.uid, (list) => {
         state.outgoing = list;
         refresh();
       }),
     );
+    // Requests addressed to my email; only visible once the email is verified.
+    if (user.email && user.emailVerified) {
+      subs.user.push(
+        fb.watchIncomingRequests(user.email, (list) => {
+          state.incoming = list;
+          refresh();
+        }, (err) => console.warn("Friend requests unavailable", err.code)),
+      );
+    }
   }
   if (modal.open) modal.close();
   route();

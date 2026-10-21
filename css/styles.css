@@ -415,6 +415,21 @@ textarea { width: 100%; resize: vertical; min-height: 84px; }
 .person .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: end; }
 .search-row { display: flex; gap: 8px; margin: 12px 0 8px; }
+.form-status { margin: 4px 0 0; font-size: 0.9rem; color: var(--ok); min-height: 1.4em; }
+.form-status.error { color: var(--danger); }
+.request-tag {
+  display: inline-block; font-size: 0.62rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--gold-text); background: var(--gold-soft); border: 1px solid var(--gold);
+  padding: 1px 6px; border-radius: var(--radius); margin-bottom: 3px;
+}
+.verify-panel { border-color: var(--gold); border-top: 3px solid var(--gold); margin-bottom: 16px; }
+.verify-panel p { margin: 8px 0 12px; }
+.bell {
+  position: relative; display: inline-grid; place-items: center; width: 34px; height: 34px;
+  text-decoration: none; font-size: 1.15rem; border-radius: 50%;
+}
+.bell:hover { background: var(--surface-2); }
+.bell .badge { position: absolute; top: -2px; right: -4px; }
 .search-row input { flex: 1; }
 
 .stat-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: 16px 0; }

@@ -8,28 +8,32 @@ service cloud.firestore {
     function areFriends(uid) {
       return signedIn() && exists(/databases/$(database)/documents/users/$(uid)/friends/$(request.auth.uid));
     }
+    // Friend requests are addressed by email, so the email must be proven (Google
+    // accounts always are; email/password accounts after clicking the verification link).
+    function verifiedEmail() {
+      return signedIn() && request.auth.token.email != null && request.auth.token.email_verified == true;
+    }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function requestExists(id) {
+      return exists(/databases/$(database)/documents/friendRequests/$(id));
+    }
 
-    // Public profile: any signed-in user can see names (needed for friend search).
+    // Public profile (name + photo). Readable one at a time by id (friends, request
+    // senders), but not listable, so nobody can download the user directory.
     match /profiles/{uid} {
-      allow read: if signedIn();
+      allow get: if signedIn();
+      allow list: if false;
       allow write: if isUser(uid)
         && request.resource.data.keys().hasOnly(['displayName', 'nameLower', 'photoURL', 'updatedAt'])
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0
         && request.resource.data.displayName.size() <= 40
-        && request.resource.data.nameLower == request.resource.data.displayName.lower();
-    }
-
-    // Find-a-friend-by-email. Single lookups only, so emails can't be enumerated.
-    match /emailIndex/{email} {
-      allow get: if signedIn();
-      allow list: if false;
-      allow create, update: if signedIn()
-        && request.auth.token.email != null
-        && email == request.auth.token.email.lower()
-        && request.resource.data.keys().hasOnly(['uid'])
-        && request.resource.data.uid == request.auth.uid;
-      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+        && request.resource.data.nameLower == request.resource.data.displayName.lower()
+        // Only Google profile photos, so a photo can't point at a tracking server.
+        && request.resource.data.photoURL is string
+        && request.resource.data.photoURL.size() <= 1000
+        && (request.resource.data.photoURL == ''
+            || request.resource.data.photoURL.matches('https://[a-z0-9-]+[.]googleusercontent[.]com/.*'));
     }
 
     match /users/{uid} {
@@ -58,31 +62,41 @@ service cloud.firestore {
           && request.resource.data.filters.keys().hasOnly(['category', 'genre', 'from', 'to', 'result', 'status', 'sort']);
       }
 
-      // Friendship is stored on both sides. It can only be created by the person
-      // accepting a pending friend request (friendRequests/{from}_{to}).
+      // Friendship is stored on both sides. Only the recipient of a pending request
+      // (friendRequests/{senderUid}_{recipientEmail}) can create it, by accepting.
       match /friends/{friendId} {
         allow read: if isUser(uid) || isUser(friendId);
-        allow create: if request.resource.data.keys().hasOnly(['since']) && (
-          (isUser(uid) && exists(/databases/$(database)/documents/friendRequests/$(friendId + '_' + uid))) ||
-          (isUser(friendId) && exists(/databases/$(database)/documents/friendRequests/$(uid + '_' + friendId)))
+        allow create: if request.resource.data.keys().hasOnly(['since']) && verifiedEmail() && (
+          (isUser(uid) && requestExists(friendId + '_' + myEmail())) ||
+          (isUser(friendId) && requestExists(uid + '_' + myEmail()))
         );
         allow delete: if isUser(uid) || isUser(friendId);
       }
     }
 
+    // Friend requests are addressed to an email. Sending never reveals whether anyone
+    // has that email: the request is simply stored, and only an account with that
+    // (verified) email can ever see it. Id: {senderUid}_{recipientEmail}.
     match /friendRequests/{requestId} {
-      // `resource == null` lets the app check whether a request exists before sending one.
-      allow get: if signedIn()
-        && (resource == null || resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
-      allow list: if signedIn()
-        && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
-      allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['from', 'to', 'createdAt'])
+      allow get, list: if signedIn() && (
+        resource.data.from == request.auth.uid ||
+        (verifiedEmail() && resource.data.toEmail == myEmail())
+      );
+      allow create: if verifiedEmail()
+        && request.resource.data.keys().hasOnly(['from', 'fromEmail', 'toEmail', 'createdAt'])
         && request.resource.data.from == request.auth.uid
-        && request.resource.data.to != request.auth.uid
-        && requestId == request.resource.data.from + '_' + request.resource.data.to
-        && exists(/databases/$(database)/documents/profiles/$(request.resource.data.to));
-      allow delete: if signedIn() && request.auth.uid in [resource.data.from, resource.data.to];
+        && request.resource.data.fromEmail == myEmail()
+        && request.resource.data.toEmail is string
+        && request.resource.data.toEmail.size() <= 254
+        && request.resource.data.toEmail == request.resource.data.toEmail.lower()
+        && request.resource.data.toEmail.matches('[^@ /]+@[^@ /]+[.][^@ /]+')
+        && request.resource.data.toEmail != myEmail()
+        && requestId == request.auth.uid + '_' + request.resource.data.toEmail;
+      // Sender cancels, or recipient accepts/cancels.
+      allow delete: if signedIn() && (
+        resource.data.from == request.auth.uid ||
+        (verifiedEmail() && resource.data.toEmail == myEmail())
+      );
     }
   }
 }

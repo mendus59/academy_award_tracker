@@ -7,7 +7,7 @@ Track every Academy Award–nominated film you've seen, rate and review them, an
 - **Two layouts.** Cards show details and award tags. Compact shows one line per film, grouped under a header for each award year when sorted by year.
 - **Accounts** (Google or email/password). Mark films as seen, rate them 1–5 stars, and write short reviews of up to 500 characters.
 - **Settings.** Each user can save a default search (e.g. Best Picture winners only, oldest first) and a default layout. These apply whenever they open the site, on any device.
-- **Friends.** Send and accept friend requests, see friends' seen films, ratings and reviews, and compare lists: films you've *both* seen, films *neither* of you has seen ("pick a film together"), and so on.
+- **Friends.** Add a friend by email. The request appears as a *Pending Request* you can cancel. If the email belongs to an account, that person gets a 🔔 notification and can **Accept** or **Cancel** it. The app never reveals whether an email has an account. Friends can see each other's seen films, ratings and reviews, and compare lists: films you've *both* seen, films *neither* of you has seen ("pick a film together"), and so on.
 
 It's a static site (plain HTML/CSS/JS with no build step) hosted on **GitHub Pages**, with **Firebase** Authentication and Cloud Firestore for users and data.
 
@@ -51,7 +51,10 @@ The rules make sure that:
 - only you and your accepted friends can read them;
 - your settings are private to you;
 - a friendship can only be created by the person accepting a pending friend request;
-- emails can be looked up one at a time (to add a friend) but never listed.
+- friend requests are addressed to an email and can only be seen by the sender and by an account that has **verified** that email. Sending a request never reveals whether the email has an account, and there is no user search or directory;
+- profiles (name and photo) can be read one at a time by id but not listed, and photos must be Google profile images.
+
+Email/password users get a verification email at sign-up and must click it before sending or receiving friend requests; Google accounts are verified already. Firebase sends the email using its default template, which you can customise under **Authentication → Templates**.
 
 ## 2. Publish with GitHub Actions
 
@@ -160,12 +163,11 @@ Never commit `.env`. Only poster paths are stored; images load directly from TMD
 
 | Path | Contents | Who can read |
 |---|---|---|
-| `profiles/{uid}` | `displayName`, `nameLower`, `photoURL` | any signed-in user (for friend search) |
-| `emailIndex/{email}` | `uid` | single lookups by signed-in users |
+| `profiles/{uid}` | `displayName`, `nameLower`, `photoURL` | any signed-in user, one at a time by id (not listable) |
 | `users/{uid}/movies/{imdbId}` | `seen`, `rating` (0–5), `review` (≤500 chars), `updatedAt` | the user and their friends |
 | `users/{uid}/friends/{friendUid}` | `since` | the two friends |
 | `users/{uid}/settings/prefs` | `filters` (default category, genre, result, years, status, sort), `layout` (`cards`/`compact`) | the user only |
-| `friendRequests/{from}_{to}` | `from`, `to`, `createdAt` | sender and recipient |
+| `friendRequests/{fromUid}_{toEmail}` | `from`, `fromEmail`, `toEmail`, `createdAt` | the sender, and an account with that verified email |
 
 ## Design and trademarks
 
