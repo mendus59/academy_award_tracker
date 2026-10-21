@@ -722,7 +722,7 @@ function renderList() {
   const compact = state.layout === "compact";
   listEl.classList.toggle("compact", compact);
   if (!visible.length) listEl.innerHTML = `<p class="empty">No films match those filters.</p>`;
-  else listEl.innerHTML = compact ? compactList(visible) : visible.map(movieCard).join("");
+  else listEl.innerHTML = compact ? compactList(visible) : cardList(visible);
 
   const more = $("#load-more");
   const remaining = currentList.length - visible.length;
@@ -809,12 +809,11 @@ function ratingMarks(m, mine) {
   return html;
 }
 
-// Compact layout: one line per film. When sorted by year, films are grouped
-// under a header for each Oscar year.
-function compactList(movies) {
-  const byYear = state.filters.sort === "year-desc" || state.filters.sort === "year-asc";
-  if (!byYear) return `<div class="row-group">${movies.map((m) => movieRow(m, true)).join("")}</div>`;
+const sortedByYear = () => state.filters.sort === "year-desc" || state.filters.sort === "year-asc";
 
+// Groups consecutive films under a header for each award year. The count is for the
+// whole filtered list, not just the films loaded so far.
+function yearSections(movies, renderItem, sectionClass) {
   const perYear = new Map();
   for (const m of currentList) perYear.set(m.ay, (perYear.get(m.ay) || 0) + 1);
 
@@ -822,17 +821,29 @@ function compactList(movies) {
   let year = null;
   for (const m of movies) {
     if (m.ay !== year) {
-      if (year !== null) html += "</section>";
+      if (year !== null) html += "</div></section>";
       year = m.ay;
       html += `
-        <section class="year-group">
+        <section class="${sectionClass}">
           <h2 class="year-head">${esc(m.n[0].ay)}
             <span class="year-sub">${ordinal(m.cer)} Academy Awards · ${plural(perYear.get(year), "film")}</span>
-          </h2>`;
+          </h2>
+          <div class="year-items">`;
     }
-    html += movieRow(m, false);
+    html += renderItem(m);
   }
-  return html + "</section>";
+  return html + "</div></section>";
+}
+
+// Card layout: year sections when sorted by year, otherwise a plain list.
+function cardList(movies) {
+  return sortedByYear() ? yearSections(movies, movieCard, "year-section") : movies.map(movieCard).join("");
+}
+
+// Compact layout: one line per film, with the same year sections.
+function compactList(movies) {
+  if (!sortedByYear()) return `<div class="row-group">${movies.map((m) => movieRow(m, true)).join("")}</div>`;
+  return yearSections(movies, (m) => movieRow(m, false), "year-group");
 }
 
 // Gold badge counting only wins in the selected categories (all wins when unfiltered).

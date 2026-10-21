@@ -319,7 +319,12 @@ textarea { width: 100%; resize: vertical; min-height: 84px; }
   display: flex; align-items: center; gap: 10px; padding: 6px 16px; min-height: 40px;
   border-top: 1px solid var(--border); cursor: pointer; white-space: nowrap;
 }
-.year-head + .movie-row, .row-group > .movie-row:first-child { border-top: 0; }
+.year-items > .movie-row:first-child, .row-group > .movie-row:first-child { border-top: 0; }
+
+/* Card layout year sections: the header sticks while scrolling through that year. */
+.movie-list:has(> .year-section) { gap: 28px; }
+.year-section .year-head { position: sticky; top: 0; z-index: 5; border-radius: var(--radius) var(--radius) 0 0; }
+.year-section .year-items { display: grid; gap: 8px; margin-top: 8px; }
 .movie-row.has-win { box-shadow: inset 3px 0 var(--gold); }
 .movie-row:hover, .movie-row:focus-visible { background: var(--surface-2); outline: none; }
 .movie-row .win-badge { margin-left: 0; flex: none; }
