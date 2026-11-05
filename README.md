@@ -1,5 +1,16 @@
 # Nominated: an Academy Award film tracker
 
+<!-- site-summary:start -->
+<!-- This section is this project's card on https://mendus59.github.io and is copied there daily.
+     Keep it true of what's on main: one plain-text summary line (max 160 characters), then 1-6 short bullets.
+     See CLAUDE.md ("Site summary"). -->
+Track every Academy Award–nominated film you've seen.
+
+- All 5,264 nominated films and 10,876 nominations since the 1st Academy Awards, with filters by person, category, genre and year.
+- Mark films seen, rate and review them, and save a default search.
+- Add friends to compare lists and find a film neither of you has seen.
+<!-- site-summary:end -->
+
 Track every Academy Award–nominated film you've seen, rate and review them, and find something to watch with friends.
 
 - **Every nominated film.** 5,264 films and 10,876 nominations from the 1st Academy Awards (1927/28) through the 98th (2025 films), including every film an actor was nominated for. Winners are labeled 🏆.
