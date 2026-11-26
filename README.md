@@ -11,6 +11,9 @@ Track every Academy Award–nominated film you've seen.
 - Add friends to compare lists and find a film neither of you has seen.
 <!-- site-summary:end -->
 
+<!-- site-screenshot: docs/screenshot.jpg -->
+![Screenshot of Nominated](docs/screenshot.jpg)
+
 Track every Academy Award–nominated film you've seen, rate and review them, and find something to watch with friends.
 
 - **Every nominated film.** 5,264 films and 10,876 nominations from the 1st Academy Awards (1927/28) through the 98th (2025 films), including every film an actor was nominated for. Winners are labeled 🏆.
